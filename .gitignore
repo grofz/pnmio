@@ -1,5 +1,6 @@
 *.o
 *.mod
 a.out
+*.exe
 test*
 !test.f90

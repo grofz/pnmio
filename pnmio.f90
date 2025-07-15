@@ -22,7 +22,8 @@
 ! -----------------------------------------------------------------------------
   implicit none
   private
-  public readpnm, writepgm, writeppm, colormap, assign_colormap
+  public readpnm_legacy, writepgm, writeppm, colormap, assign_colormap
+  public consume_decimal
 
   ! SWITCH 'iplain' TO SELECT RAW OR PLAIN FORMAT DURING WRITING:
   ! 1. use false on LINUX, will produce raw-format (smaller files)
@@ -40,7 +41,7 @@
   contains
 
 ! -----------------------------------------------------------------------------
-  recursive subroutine readpnm(filename,aa)
+  recursive subroutine readpnm_legacy(filename, aa)
 ! -----------------------------------------------------------------------------
 !NOTE: in pnm format specification lines begining with '#' are comments
 !      this has not been implemented yet (TODO)
@@ -106,7 +107,7 @@
       stop 1
     endif
 
-    call readpnm(filename=tmpfile, aa=aa)
+    call readpnm_legacy(filename=tmpfile, aa=aa)
 
     print *, 'readpnm info: deleting temporary file...'
     open(newunit=fid2, status='old', file=tmpfile, iostat=cmdstat)
@@ -188,7 +189,7 @@ print *, magick
 
   close(fid)
 ! -----------------------------------------------------------------------------
-  end subroutine readpnm
+  end subroutine readpnm_legacy
 ! -----------------------------------------------------------------------------
 
 
@@ -446,6 +447,84 @@ print *, 'assign colormap :',fmin,fmax
     end if
   end subroutine convert_plain2raw
 ! -----------------------------------------------------------------------------
+
+
+! ---------------------------------
+! helper procedures for stream read
+! ---------------------------------
+
+  pure logical function is_whitespace(ch)
+    character(len=1), intent(in) :: ch
+
+    ! Assuming white space is a character with ASCII code between
+    ! 9 and 13 (TAB, LF, VT, FF, CR) or a space
+    is_whitespace = (iachar(ch)>=9 .and. iachar(ch)<=13) .or. ch==' '
+  end function
+
+  pure logical function is_newline(ch)
+    character(len=1), intent(in) :: ch
+
+    ! Assuming new line is LF
+    is_newline = iachar(ch) == 10 ! iachar(new_line(ch))
+  end function
+
+
+  subroutine consume_decimal(fid, val)
+    integer, intent(in) :: fid
+    integer, intent(out) :: val
+
+    ! consume ASCII decimal from the stream
+    ! - read and ignore all whitespace characters
+    ! - if '#' read, then ignore all characters until CR or LF
+
+    integer, parameter :: MODE_SCAN=0, MODE_COMMENT=1, MODE_READ=2
+    integer :: ios, pos, mode, dec_len 
+    character(len=1) :: ch
+    character(len=10) :: dec
+    character(len=100) :: iomsg
+
+    mode = MODE_SCAN
+    dec = ''
+    dec_len = 0
+    inquire(unit=fid, pos=pos)
+    do
+      read(fid, iostat=ios, pos=pos, iomsg=iomsg) ch
+      pos = pos + 1
+      if (ios /= 0) then
+        print *, 'iomsg: '//trim(iomsg)
+        error stop 'consume_decimal: read error (see above)'
+      end if
+
+      select case(mode)
+      case(MODE_SCAN)
+        if (.not. is_whitespace(ch)) then
+          if (ch=='#') then
+            mode = MODE_COMMENT
+          else
+            mode = MODE_READ
+            pos = pos - 1 ! re-read
+          end if
+        end if
+      case(MODE_READ)
+        if (is_whitespace(ch)) exit
+        dec_len = dec_len + 1
+        dec(dec_len:dec_len) = ch
+      case(MODE_COMMENT)
+        if (iachar(ch)==10 .or. iachar(ch)==13) then
+          mode = MODE_SCAN
+          pos = pos - 1 ! should not be part of comment
+        end if
+      case default
+        error stop 'consume_decimal: should not be here'
+      end select
+    end do
+
+    read(dec(1:dec_len),*,iostat=ios, iomsg=iomsg) val
+    if (ios /= 0) then
+      print *, 'iomsg: '//trim(iomsg)
+      error stop 'consume_decimal: conversion error (see above)'
+    end if
+  end subroutine
 
 
 
