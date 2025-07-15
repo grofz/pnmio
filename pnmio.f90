@@ -20,10 +20,11 @@
 ! -----------------------------------------------------------------------------
   module pnmio_module
 ! -----------------------------------------------------------------------------
+  use iso_fortran_env, only : error_unit, int8, int16
   implicit none
   private
-  public readpnm_legacy, writepgm, writeppm, colormap, assign_colormap
-  public consume_decimal
+  public readpnm, readpnm_legacy, writepgm, writeppm, colormap, assign_colormap
+  public consume_header, consume_decimal, consume_magick ! public only for testing
 
   ! SWITCH 'iplain' TO SELECT RAW OR PLAIN FORMAT DURING WRITING:
   ! 1. use false on LINUX, will produce raw-format (smaller files)
@@ -33,12 +34,138 @@
 
   character(len=*), parameter :: tmpfile = '.tmp.plain'
 
+  integer, parameter :: IOMSG_MAXLEN = 100
+
   interface assign_colormap
     module procedure assign_colormap_int
     module procedure assign_colormap_2R
   end interface assign_colormap
 
+  interface readpnm
+    module procedure readpnm_2d
+    module procedure readpnm_3d
+  end interface
+
+  interface s2u
+    module procedure s2u_8
+    module procedure s2u_16
+  end interface
+
   contains
+
+! ==========================
+! READ PBM / PGM / PPM FILES
+! ==========================
+
+  subroutine readpnm_2d(filename, aa, ierr)
+    character(len=*), intent(in) :: filename
+    integer, allocatable, intent(out) :: aa(:,:)
+    integer, intent(out), optional :: ierr
+!
+! This is for PBM and PGM only. Wrapper for readpnm_3d.
+!
+    integer, allocatable :: atmp(:,:,:)
+    integer :: ierr0
+
+    BLK: block
+      call readpnm_3d(filename, atmp, ierr0)
+      if (ierr0 /= 0) exit BLK
+      if (size(atmp, dim=1) /= 1) then
+        ierr0 = -2
+        write(error_unit, '(a)') 'readpnm error: rank-3 array required for PPM'
+        exit BLK
+      end if
+      allocate(aa(size(atmp,dim=2), size(atmp,dim=3)))
+      aa = atmp(1,:,:)
+      if (present(ierr)) ierr = 0
+      return
+    end block BLK
+
+    ! error occurred
+    if (present(ierr)) then
+      ierr = ierr0
+    else
+      error stop 'readpnm error - see above'
+    end if
+  end subroutine readpnm_2d
+
+
+  subroutine readpnm_3d(filename, aa, ierr)
+    character(len=*), intent(in) :: filename
+    integer, allocatable, intent(out) :: aa(:,:,:)
+    integer, intent(out), optional :: ierr
+!
+! Read data from PBM, PGM or PPM file
+!   Values in array are ordered as
+!   - RGB components making a tuple (first index is component id)
+!   - rows containing W tuples (second index is column id)
+!   - raster containing H rows (third index is row id)
+!
+    integer :: p, w, h, mx, ierr0, ios, fid
+    character(len=IOMSG_MAXLEN) :: iomsg
+    logical :: file_exist
+    integer(int8), allocatable :: raster_1b(:)
+    integer(int16), allocatable :: raster_2b(:)
+
+    BLK: block
+      ! open file
+      inquire(file=filename, exist=file_exist)
+      if (.not. file_exist) then
+        write(error_unit,'(a)') 'file "'//trim(filename)//'" does not exist'
+        exit BLK
+      end if
+      open(newunit=fid, file = filename, status = 'old', access='stream', &
+          form='unformatted', iostat=ios, iomsg=iomsg)
+      if (ios /= 0) then
+        write(error_unit,'(a)') 'opening file iomsg"'//trim(iomsg)
+        exit BLK
+      end if
+
+      ! read header
+      call consume_header(fid, p, w, h, mx, ierr0)
+      if (ierr0 /= 0) exit BLK
+
+      if (mod(p,3)==0) then
+        ! PPM
+        allocate(aa(3,w,h))
+        if (mx < 256) then
+          allocate(raster_1b(w*h*3))
+        else
+          allocate(raster_2b(w*h*3))
+        end if
+      else
+        ! PGM or PBM
+        allocate(aa(1,w,h))
+        if (mx < 256) then
+          allocate(raster_1b(w*h))
+        else
+          allocate(raster_2b(w*h))
+        end if
+      end if
+
+      if (mx < 256) then
+        call consume_raster(fid, p, ierr0, r1b=raster_1b)
+        if (ierr0 /= 0) exit BLK
+        aa = reshape(s2u(raster_1b), shape(aa))
+      else
+        call consume_raster(fid, p, ierr0, r2b=raster_2b)
+        if (ierr0 /= 0) exit BLK
+        aa = reshape(s2u(raster_2b), shape(aa))
+      end if
+
+      if (present(ierr)) ierr = 0
+      return
+    end block BLK
+
+    ! error occurred
+    if (present(ierr)) then
+      ierr = ierr0
+    else
+      error stop 'readpnm error - see above'
+    end if
+
+  end subroutine readpnm_3d
+
 
 ! -----------------------------------------------------------------------------
   recursive subroutine readpnm_legacy(filename, aa)
@@ -461,6 +588,7 @@ print *, 'assign colormap :',fmin,fmax
     is_whitespace = (iachar(ch)>=9 .and. iachar(ch)<=13) .or. ch==' '
   end function
 
+
   pure logical function is_newline(ch)
     character(len=1), intent(in) :: ch
 
@@ -469,20 +597,54 @@ print *, 'assign colormap :',fmin,fmax
   end function
 
 
-  subroutine consume_decimal(fid, val)
+  subroutine consume_magick(fid, val)
     integer, intent(in) :: fid
-    integer, intent(out) :: val
+    integer, intent(out) :: val ! 1-6 or 0 for an unknown signature
+
+    ! we assume "fid" is opened as "unformatted stream"
+    character(len=2) :: ch2
+    integer :: ios
+    character(len=IOMSG_MAXLEN) :: iomsg
+
+    val = 0
+    read(fid, iostat=ios, iomsg=iomsg) ch2
+    if (ios /= 0) then
+      write(error_unit,'(a)') 'consume_magick iomsg: '//trim(iomsg)
+      return
+    end if
+    select case(ch2)
+    case('P1')
+      val = 1
+    case('P2')
+      val = 2
+    case('P3')
+      val = 3
+    case('P4')
+      val = 4
+    case('P5')
+      val = 5
+    case('P6')
+      val = 6
+    end select
+  end subroutine
+
+
+  subroutine consume_decimal(fid, val, ierr)
+    integer, intent(in) :: fid
+    integer, intent(out) :: val, ierr
 
     ! consume ASCII decimal from the stream
     ! - read and ignore all whitespace characters
     ! - if '#' read, then ignore all characters until CR or LF
+    ! we assume "fid" is opened as "unformatted stream"
 
     integer, parameter :: MODE_SCAN=0, MODE_COMMENT=1, MODE_READ=2
-    integer :: ios, pos, mode, dec_len 
-    character(len=1) :: ch
-    character(len=10) :: dec
-    character(len=100) :: iomsg
+    integer :: ios, pos, mode, dec_len
+    character(len=1)   :: ch
+    character(len=10)  :: dec
+    character(len=IOMSG_MAXLEN) :: iomsg
 
+    ierr = -1
     mode = MODE_SCAN
     dec = ''
     dec_len = 0
@@ -491,25 +653,32 @@ print *, 'assign colormap :',fmin,fmax
       read(fid, iostat=ios, pos=pos, iomsg=iomsg) ch
       pos = pos + 1
       if (ios /= 0) then
-        print *, 'iomsg: '//trim(iomsg)
-        error stop 'consume_decimal: read error (see above)'
+        write(error_unit,'(a)') 'consume_decimal iomsg: '//trim(iomsg)
+        return
       end if
 
       select case(mode)
       case(MODE_SCAN)
+        ! stay in scan mode until non-whitespace character is encountered
         if (.not. is_whitespace(ch)) then
           if (ch=='#') then
             mode = MODE_COMMENT
           else
             mode = MODE_READ
-            pos = pos - 1 ! re-read
+            pos = pos - 1 ! re-read first digit
           end if
         end if
       case(MODE_READ)
+        ! copy all digits, then exit
         if (is_whitespace(ch)) exit
+        if (dec_len==len(dec)) then
+          write(error_unit,'(a)') 'consume_decimal: too many digits'
+          return
+        end if
         dec_len = dec_len + 1
         dec(dec_len:dec_len) = ch
       case(MODE_COMMENT)
+        ! read and ignore all until CR or LF, then switch to scan mode again
         if (iachar(ch)==10 .or. iachar(ch)==13) then
           mode = MODE_SCAN
           pos = pos - 1 ! should not be part of comment
@@ -521,12 +690,154 @@ print *, 'assign colormap :',fmin,fmax
 
     read(dec(1:dec_len),*,iostat=ios, iomsg=iomsg) val
     if (ios /= 0) then
-      print *, 'iomsg: '//trim(iomsg)
-      error stop 'consume_decimal: conversion error (see above)'
+      write(error_unit,*) 'consume_decimal conversion: '//trim(iomsg)
+      return
     end if
+
+    ierr = 0 ! "val" read withou any error
   end subroutine
 
 
+  subroutine consume_header(fid, p, w, h, maxval, ierr)
+    integer, intent(in)  :: fid
+    integer, intent(out) :: p, w, h, maxval, ierr
+
+    ! read header of an PPM image
+    ! assuming "fid" is opened as "unformatted stream"
+
+    HDR: block
+      call consume_magick(fid, p)
+      if (p==0) exit HDR
+      call consume_decimal(fid, w, ierr)
+      if (ierr /= 0) exit HDR
+      call consume_decimal(fid, h, ierr)
+      if (ierr /= 0) exit HDR
+      ! "maxval" is not defined for PBM format (P1 or P4)
+      if (p/=1 .and. p/=4) then
+        call consume_decimal(fid, maxval, ierr)
+        if (ierr /= 0) exit HDR
+      else
+        maxval = 1
+      end if
+      ierr = 0
+      return
+    end block HDR
+
+    ! an error occurred
+    ierr = -1
+    write(error_unit,'(a)') 'error: header is invalid'
+  end subroutine
+
+
+  subroutine consume_raster(fid, p, ierr, r1b, r2b)
+    integer, intent(in) :: fid, p
+    integer, intent(out) :: ierr
+    integer(int8), intent(out), optional :: r1b(:)
+    integer(int16), intent(out), optional :: r2b(:)
+
+    ! assuming "fid" is opened as "unformatted stream"
+    integer :: ios, i
+    character(len=IOMSG_MAXLEN) :: iomsg
+    integer, allocatable :: u(:)
+
+    if (present(r1b) .eqv. present(r2b)) &
+      error stop 'consume_raster: only r1b or r2b must be given'
+    ierr = -1
+
+    if ((p-1)/3 == 1) then
+      ! binary format
+      if (present(r1b)) then
+        read(fid, iostat=ios, iomsg=iomsg) r1b
+      else
+        read(fid, iostat=ios, iomsg=iomsg) r2b
+      end if
+      if (ios/=0) then
+        write(error_unit, '(a)') 'raster iomsg: '//trim(iomsg)
+        return
+      end if
+
+    else if ((p-1)/3 == 0) then
+      ! raw format (ASCII)
+      if (present(r1b)) then
+        allocate(u(size(r1b)))
+      else
+        allocate(u(size(r2b)))
+      end if
+
+      do i=1, size(u)
+        call consume_decimal(fid, u(i), ierr)
+        if (ierr /= 0) then
+          write(error_unit, '("raster raw error at posiiton ",i0," out of ",i0)') i, size(u)
+          return
+        end if
+      end do
+
+      ! convert to unsigned so it fits to 1B or 2B integers
+      if (present(r1b)) then
+        r1b = u2s_8(u)
+      else
+        r2b = u2s_16(u)
+      end if
+    end if
+
+    ierr = 0
+  end subroutine consume_raster
+
+
+  !
+  ! Conversion from signed to unsigned numbers
+  !
+  elemental function s2u_8(sint) result (uint)
+    integer(int8), intent(in) :: sint
+    integer :: uint
+
+    if (sint >= 0_int8) then
+      uint = int(sint, kind=kind(uint))
+    else
+      uint = 2*(huge(sint)+1) + int(sint, kind=kind(uint))
+    end if
+  end function
+
+  elemental function s2u_16(sint) result (uint)
+    integer(int16), intent(in) :: sint
+    integer :: uint
+
+    if (sint >= 0_int16) then
+      uint = int(sint, kind=kind(uint))
+    else
+      uint = 2*(huge(sint)+1) + int(sint, kind=kind(uint))
+    end if
+  end function
+
+  elemental function u2s_8(u) result (s)
+    integer, intent(in) :: u
+    integer(int8) :: s
+
+    if (u < 0) then
+      error stop 'u2s_8 input is negative'
+    else if (u <= huge(s)) then
+      s = int(u, kind=kind(s))
+    elseif (u < 2*(huge(s)+1)) then
+      s = int(u-2*(huge(s)+1), kind=kind(s))
+    else
+      error stop 'u2s_8 input too big to convert'
+    end if
+  end function
+
+  elemental function u2s_16(u) result (s)
+    integer, intent(in) :: u
+    integer(int16) :: s
+
+    if (u < 0) then
+      error stop 'u2s_16 input is negative'
+    else if (u <= huge(s)) then
+      s = int(u, kind=kind(s))
+    elseif (u < 2*(huge(s)+1)) then
+      s = int(u-2*(huge(s)+1), kind=kind(s))
+    else
+      error stop 'u2s_16 input too big to convert'
+    end if
+  end function
 
 ! -----------------------------------------------------------------------------
   end module pnmio_module
