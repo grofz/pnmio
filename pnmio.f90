@@ -1,20 +1,32 @@
+! ==============================================
+! (c) 2024 Z. Grof (UCT Prague) <grofz@vscht.cz>
+! ==============================================
+
+
 !CONTENT
 ! module pnmio_module
-!   subroutine readpnm(filename,nx,ny,nmax,aa)
-!   subroutine writepgm(filename,aa,nmax)
-!   subroutine writeppm(filename,rr,gg,bb)
+!   interface assign_colormap
+!   interface readpnm
+!   interface writeppm
+!  *interface s2u
+!  *subroutine readpnm_2d(filename, aa, ierr)
+!  *subroutine readpnm_3d(filename, aa, ierr)
+!  *subroutine writepnm_3d(filename, aa, mx, is_ascii, ierr)
+!   subroutine writepgm(filename, aa, mx, is_ascii, ierr)
+!  *subroutine writeppm_3x2d(filename, rr, gg, bb, mx, is_ascii, ierr)
+!  *subroutine writeppm_1x3d(filename, aa, mx, is_ascii, ierr)
 !   subroutine colormap(red,green,blue)
-!   subroutine assign_colormap2(aa,rr,gg,bb,n,imin,imax,iwh,ibl)
+!  *subroutine assign_colormap_int(aa,rr,gg,bb,n,imin,imax,iwh,ibl)
+!  *subroutine assign_colormap_2R(uu,rr,gg,bb,n,rmin,rmax)
+!  *helper procedures for stream read
+!  *conversion from signed to unsigned numbers
+!
+! (*) private objects
 
 ! SHORT DESCRIPTION
-! These routines work with 'raw' PNM formats
+! These routines work 'raw' or 'plain' PNM formats (P4 - not yet implemented)
 
-! NOTE: these subroutines use system command 'pnmtopnm' for conversions
-! between 'raw' and 'plain' formats. If this or similar tool is not
-! available then these routines will work with 'plain' formats only.
-!
-! For writing plain formats -> modify parameter "iplain" at the start of module
-!
+
 ! WEB: https://netpbm.sourceforge.net/doc/pnm.html
 
 ! -----------------------------------------------------------------------------
@@ -23,16 +35,10 @@
   use iso_fortran_env, only : error_unit, int8, int16
   implicit none
   private
-  public readpnm, readpnm_legacy, writepgm, writeppm, colormap, assign_colormap
-  public consume_header, consume_decimal, consume_magick ! public only for testing
+  public readpnm, writepgm, writeppm, colormap, assign_colormap
 
-  ! SWITCH 'iplain' TO SELECT RAW OR PLAIN FORMAT DURING WRITING:
-  ! 1. use false on LINUX, will produce raw-format (smaller files)
-  logical, parameter :: iplain = .false.
-  ! 2. use true on WINDOWS, or if netpbm library is not installed (larger files)
-  !logical, parameter :: iplain = .true.
-
-  character(len=*), parameter :: tmpfile = '.tmp.plain'
+  ! default value of optional MAXVAL argument
+  integer, parameter :: MX_DEFAULT = 255
 
   integer, parameter :: IOMSG_MAXLEN = 100
 
@@ -46,6 +52,11 @@
     module procedure readpnm_3d
   end interface
 
+  interface writeppm
+    module procedure writeppm_3x2d
+    module procedure writeppm_1x3d
+  end interface writeppm
+
   interface s2u
     module procedure s2u_8
     module procedure s2u_16
@@ -53,9 +64,9 @@
 
   contains
 
-! ==========================
-! READ PBM / PGM / PPM FILES
-! ==========================
+! --------------
+! Read PNM files
+! --------------
 
   subroutine readpnm_2d(filename, aa, ierr)
     character(len=*), intent(in) :: filename
@@ -83,7 +94,7 @@
 
     ! error occurred
     if (present(ierr)) then
-      ierr = ierr0
+      ierr = ierr0 ! user is catching the error
     else
       error stop 'readpnm error - see above'
     end if
@@ -97,8 +108,8 @@
 !
 ! Read data from PBM, PGM or PPM file
 !   Values in array are ordered as
-!   - RGB components making a tuple (first index is component id)
-!   - rows containing W tuples (second index is column id)
+!   - RGB components making a pixel (first index is component id)
+!   - rows containing W pixels (second index is column id)
 !   - raster containing H rows (third index is row id)
 !
     integer :: p, w, h, mx, ierr0, ios, fid, fsize, fpos
@@ -128,29 +139,32 @@
       if (mod(p,3)==0) then
         ! PPM
         allocate(aa(3,w,h))
-        if (mx < 256) then
-          allocate(raster_1b(w*h*3))
-        else
+        if (mx > 255) then
           allocate(raster_2b(w*h*3))
+        else
+          allocate(raster_1b(w*h*3))
         end if
       else
         ! PGM or PBM
         allocate(aa(1,w,h))
-        if (mx < 256) then
-          allocate(raster_1b(w*h))
-        else
+        if (mx > 255) then
           allocate(raster_2b(w*h))
+        else if (mx == 1) then
+          ! PBM
+          error stop 'reading binary PBM not implemented' ! TODO
+        else
+          allocate(raster_1b(w*h))
         end if
       end if
 
-      if (mx < 256) then
-        call consume_raster(fid, p, ierr0, r1b=raster_1b)
-        if (ierr0 /= 0) exit BLK
-        aa = reshape(s2u(raster_1b), shape(aa))
-      else
+      if (mx > 255) then
         call consume_raster(fid, p, ierr0, r2b=raster_2b)
         if (ierr0 /= 0) exit BLK
         aa = reshape(s2u(raster_2b), shape(aa))
+      else
+        call consume_raster(fid, p, ierr0, r1b=raster_1b)
+        if (ierr0 /= 0) exit BLK
+        aa = reshape(s2u(raster_1b), shape(aa))
       end if
 
       if ((p-1)/3==1) then
@@ -169,7 +183,7 @@
 
     ! error occurred
     if (present(ierr)) then
-      ierr = ierr0
+      ierr = ierr0 ! user must catch this error
     else
       error stop 'readpnm error - see above'
     end if
@@ -177,243 +191,249 @@
   end subroutine readpnm_3d
 
 
-! -----------------------------------------------------------------------------
-  recursive subroutine readpnm_legacy(filename, aa)
-! -----------------------------------------------------------------------------
-!NOTE: in pnm format specification lines begining with '#' are comments
-!      this has not been implemented yet (TODO)
-  character(len=*)     :: filename
-  integer, allocatable :: aa(:,:)
+! ---------------
+! Write PNM files
+! ---------------
 
-  ! - local vars
-  integer            :: nx, ny, nmax
-  integer            :: fid, fid2
-  logical            :: ex
-  integer            :: magick ! 1,2,3 for PBM,PGM,PPM respectivelly
-  character(len=200) :: tmp
-  character(len=1)   :: onechar
-  integer            :: i, j, ichar, exitstat, cmdstat
+  subroutine writepnm_3d(filename, aa, mx, is_ascii, ierr)
+    character(len=*), intent(in) :: filename
+    integer, intent(in) :: aa(:,:,:)
+    integer, intent(in) :: mx
+    logical, intent(in), optional :: is_ascii
+    integer, intent(out), optional :: ierr
+!
+! PPM - first dimension of "aa" is 3, mx > 1   (P3/P6)
+! PGM - first dimension of "aa" is 1, mx > 1   (P2/P5)
+! PBM - first dimension of "aa" is 1, mx == 1  (P1/P4)
+!
+! default is binary (unless is_ascii==.T. is present)
+!
+    integer :: p, w, h, ierr0, ios, fid
+    character(len=IOMSG_MAXLEN) :: iomsg
+    character(len=1) :: magick
 
-  ! to convert 'raw format to plain we use system call:
-  ! $ pnmtopnm -plain <filename> > tmpfilename
+    w = size(aa, dim=2)
+    h = size(aa, dim=3)
+    ierr0 = -1
 
-  ! - open file & read header to get magick number
-  inquire(file=filename, exist=ex)
-  if (.not. ex) then
-    print *, 'readpnm error: file do not exist '
-    print *, trim(filename)
-    stop 1
-  endif
+    BLK: block
 
-  open(newunit=fid, file = filename, status = 'old' )
-
-  read(fid,*) tmp ! get the magick number
-  select case(trim(tmp))
-  case('P1') ! plain PBM format
-    magick = 1
-    read(fid,*) nx, ny
-    nmax = 1
-  case('P2') ! plain PGM format
-    magick = 2
-    read(fid,*) nx, ny
-    read(fid,*) nmax
-  case('P3')
-    magick = 3
-    stop 'readpnm error: P3 (ppm) format not ready, go and code it now!'
-  case('P4') ! raw PBM format
-    magick = 4
-    read(fid,*) nx, ny
-    nmax = 1
-  case('P5') ! raw PGM format
-    magick = 5
-    read(fid,*) nx, ny
-    read(fid,*) nmax
-  case('P6')
-    stop 'readpnm error: P6 (raw ppm) format not ready, go and code it now!'
-  case default
-    stop 'readpnm error: magick number not recognized, wrong format?'
-  end select
-
-  ! - use system call to convert "raw" to "plain" files
-  if (magick > 3) then
-    print *, 'readpnm info: converting raw format to plain...'
-    call execute_command_line( 'pnmtopnm -plain '//trim(filename)//' > '//trim(tmpfile), &
-      & cmdstat=cmdstat, exitstat=exitstat)
-    if (cmdstat /= 0 .or. exitstat /= 0) then
-      print *, 'readpnm: converstion failed :', cmdstat, exitstat
-      stop 1
-    endif
-
-    call readpnm_legacy(filename=tmpfile, aa=aa)
-
-    print *, 'readpnm info: deleting temporary file...'
-    open(newunit=fid2, status='old', file=tmpfile, iostat=cmdstat)
-    if (cmdstat/=0) then
-      print *, 'deleting temporary file failed, file could not be opened'
-      stop 1
-    end if
-    close(fid2, status='delete', iostat=cmdstat)
-    if (cmdstat/=0) then
-      print *, 'deleting temporary file failed, file could not be deleted'
-      stop 1
-    end if
-    close(fid)
-    return
-  endif
-
-  ! - reading "aa"
-  if (allocated(aa)) then
-    if (any(shape(aa) /= [nx, ny])) deallocate(aa)
-  end if
-  if (.not. allocated(aa)) allocate(aa(nx,ny))
-
-  select case(magick)
-  case(1) ! PBM ! pbm is tricky as there are no spaces between ones/zeroes
-    i=0; j=1
-    do
-      read(fid,'(a)',end=100) tmp
-
-      do ichar=1,len(trim(tmp))
-        onechar = tmp(ichar:ichar)
-        if (onechar == ' ') cycle
-        if (onechar /= '1' .and. onechar /= '0') then
-          print *,'readpnm error: invalid character :',onechar
-          stop
-        endif
-
-        ! now read next byte (update position)
-        if (i==nx) then
-          i=1
-          if (j==ny) then
-            print *, 'read_pnm warning: file contains too much data!'
-            stop
-          endif
-          j=j+1
+      ! identify P
+      if (size(aa,dim=1)==1) then
+        if (mx > 1) then
+          p = 5 ! PGM
+        else if (mx == 1) then
+          p = 4 ! PBM
         else
-          i=i+1
-        endif
-
-        if (onechar=='0') then
-          aa(i,j) = 0
+          write(error_unit,'("mx must be grater than 0")')
+          exit BLK
+        end if
+      else if (size(aa,dim=1)==3) then
+        if (mx > 1) then
+          p = 6 ! PPM
         else
-          aa(i,j) = 1
-        endif
+          write(error_unit,'("mx must be grater than 1 for PPM")')
+          exit BLK
+        end if
+      else
+        write(error_unit,'("first extent of aa must be 1 or 3")')
+        exit BLK
+      end if
+      if (present(is_ascii)) then
+        if (is_ascii) p = p-3
+      end if
 
-      enddo
+      ! open file
+      open(newunit=fid, file=filename, status='replace', access='stream', &
+        form='formatted', iostat=ios, iomsg=iomsg)
+      if (ios /= 0) then
+        write(error_unit,'(a)') 'opening file for writting iomsg: '//trim(iomsg)
+        exit BLK
+      end if
 
-      cycle   ! next line from file
-      100 exit
-    enddo
+      ! write header
+      write(magick,'(i1)') p
+      write(fid,'(a)') 'P'//magick
+      write(fid,'(a)') '# xreated by pnmio fortran library'
+      write(fid,'(i0,1x,i0)') w, h
+      if (mod(p,3)/=1) write(fid,'(i0)') mx
 
-    if (i /= nx .or. j /= ny) then
-      print *, 'readpnm error: file ended to soon! '
-      print *, 'bytes read ',i,j
-      print *, 'bytes expected ',nx,ny
-      stop
-    endif
+      ! write raster
+      if (p > 3) then
+        ! binary format
+        BINARY: block
+          integer(int8), allocatable :: raster_1b(:)
+          integer(int16), allocatable :: raster_2b(:)
 
-print *, 'read_pnm info: PBM file read into aa', float(sum(aa))/count(aa>=0)
+          ! re-open as "unformatted"
+          close(fid, iostat=ios, iomsg=iomsg)
+          if (ios /= 0) then
+            write(error_unit,'(a)') 'closing to reopen file iomsg: '//trim(iomsg)
+            exit BLK
+          end if
+          open(newunit=fid, file=filename, status='old', access='stream', &
+          form='unformatted', position='append', iostat=ios, iomsg=iomsg)
+          if (ios /= 0) then
+            write(error_unit,'(a)') 'reopening file iomsg: '//trim(iomsg)
+            exit BLK
+          end if
 
-  case(2) ! PGM (much easier)
-    read(fid,*) aa(1:nx,1:ny)
-print *, 'read_pnm info: PGM file read into aa', float(sum(aa))/count(aa>=0)
+          ! write raster (1B or 2B)
+          if (mx > 255) then
+            if (p==6) then
+              allocate(raster_2b(3*w*h)) ! PPM (2 bytes)
+            else
+              allocate(raster_2b(w*h))   ! PGM (2 bytes)
+            end if
+            write(fid, iostat=ios, iomsg=iomsg) reshape(u2s_16(aa), shape(raster_2b))
+          elseif (mx == 1) then
+            ! PBM
+            error stop 'binary PBM not yet implemented' ! TODO
+          else
+            if (p==6) then
+              allocate(raster_1b(3*w*h)) ! PPM
+            else
+              allocate(raster_1b(w*h))   ! PGM
+            end if
+            write(fid, iostat=ios, iomsg=iomsg) reshape(u2s_8(aa), shape(raster_1b))
+          end if
+          if (ios /= 0) then
+            write(error_unit,'(a)') 'writing raster iomsg: '//trim(iomsg)
+            exit BLK
+          end if
+        end block BINARY
 
-  case(3) ! PPM (not ready yet)
-  case default
-print *, magick
-    stop 'readpnm unexpected error'
-  end select
+      else
+        ! ascii format
+        ASCII: block
+          ! as of netpnm format specification, maximum number of characters
+          ! per line must be less than 70
+          character(len=*), parameter :: fmt_short='(17(i3,1x))'
+          character(len=*), parameter :: fmt_long='(11(i5,1x))'
+          if (mx > 255) then
+            write(fid,fmt=fmt_long,iostat=ios,iomsg=iomsg) aa
+          else
+            write(fid,fmt=fmt_short,iostat=ios,iomsg=iomsg) aa
+          end if
+        end block ASCII
+        if (ios /= 0) then
+          write(error_unit,'(a)') 'writing ASCII raster iomsg: '//trim(iomsg)
+          exit BLK
+        end if
+      end if
 
-  close(fid)
-! -----------------------------------------------------------------------------
-  end subroutine readpnm_legacy
-! -----------------------------------------------------------------------------
+      ! close file
+      close(fid, iostat=ios, iomsg=iomsg)
+      if (ios /= 0) then
+        write(error_unit,'(a)') 'closing file iomsg: '//trim(iomsg)
+        exit BLK
+      end if
+
+      if (present(ierr)) ierr = 0
+      return
+    end block BLK
+
+    ! error occurred
+    if (present(ierr)) then
+      ierr = ierr0 ! user must catch this error
+    else
+      error stop 'writepnm error - see above'
+    end if
+
+  end subroutine writepnm_3d
 
 
+  subroutine writepgm(filename, aa, mx, is_ascii, ierr)
+    character(len=*), intent(in)   :: filename
+    integer, intent(in)            :: aa(:,:)
+    integer, intent(in), optional  :: mx
+    logical, intent(in), optional  :: is_ascii
+    integer, intent(out), optional :: ierr
+!
+! Write PGM or PBM file. Just a wrapper to "writepnm_3d"
+! PBM - if "mx" is present and "mx==1"
+! PGM - otherwise
+!
+    integer :: mx0
+    integer, allocatable :: atmp(:,:,:)
 
-! -----------------------------------------------------------------------------
-  subroutine writepgm(filename, aa, nmax)
-! -----------------------------------------------------------------------------
-  character(len=*)  :: filename
-  integer           :: aa(:,:)
-  integer, optional :: nmax
+    if (present(mx)) then
+      mx0 = mx
+    else
+      mx0 = MX_DEFAULT
+    end if
+    allocate(atmp(1, size(aa,1), size(aa,2)))
+    atmp(1,:,:) = aa
+    call writepnm_3d(filename, atmp, mx0, is_ascii, ierr)
 
-  integer            :: fid
-  integer, parameter :: imax_default = 255
-  integer :: ix, iy, imax
-
-  ! ---
-
-  ix = size(aa,dim=1)
-  iy = size(aa,dim=2)
-  if (present(nmax)) then
-    imax = nmax
-    if(imax>999) print *, 'writepgm warning: go to src and change format!'
-  else
-    imax = imax_default
-  endif
-
-  if (iplain) then
-    open(newunit=fid, file = filename, status = 'replace')
-  else
-    open(newunit=fid, file = tmpfile, status = 'replace')
-  endif
-
-  write(fid, '(a)') 'P2'
-  write(fid, '(i5,1x,i5)') ix, iy
-  write(fid, '(i5)') imax
-  write(fid, '(10(i3,1x))') min(imax,max(0,aa))
-  close(fid)
-
-  ! make system call to convert to raw and delete tmpfile
-  if (.not. iplain) call convert_plain2raw(filename)
-! -----------------------------------------------------------------------------
   end subroutine writepgm
-! -----------------------------------------------------------------------------
 
 
+  subroutine writeppm_3x2d(filename, rr, gg, bb, mx, is_ascii, ierr)
+    character(len=*), intent(in)   :: filename
+    integer, intent(in)            :: rr(:,:), gg(:,:), bb(:,:)
+    integer, intent(in), optional  :: mx
+    logical, intent(in), optional  :: is_ascii
+    integer, intent(out), optional :: ierr
+!
+! Write PPM file. Just a wrapper to "writepnm_3d"
+!
+    integer :: mx0
+    integer, allocatable :: atmp(:,:,:)
 
-! -----------------------------------------------------------------------------
-  subroutine writeppm(filename,rr,gg,bb)
-! -----------------------------------------------------------------------------
-  character(len=*)   :: filename
-  integer            :: rr(:,:), gg(:,:), bb(:,:)
-  integer, parameter :: nmax=255
+    if (present(mx)) then
+      mx0 = mx
+    else
+      mx0 = MX_DEFAULT
+    end if
 
-  integer            :: fid
-  integer :: ix, iy, i, j
+    if (any(shape(rr) /= shape(gg)) .or. any(shape(rr) /= shape(bb))) then
+      if (present(ierr)) then
+        ierr = -3
+        return
+      else
+        error stop 'writeppm: arrays rr, gg and bb must have same shape'
+      end if
+    end if
 
-  ! ---
+    allocate(atmp(3, size(rr,1), size(rr,2)))
+    atmp(1,:,:) = rr
+    atmp(2,:,:) = gg
+    atmp(3,:,:) = bb
+    call writepnm_3d(filename, atmp, mx0, is_ascii, ierr)
 
-  ix = size(rr,dim=1)
-  iy = size(rr,dim=2)
-  if (ix /= size(gg,dim=1) .or. iy /= size(gg,dim=2)) then
-    print *, 'writeppm error: red and green arrays not same size'
-    stop 1
-  endif
-  if (ix /= size(bb,dim=1) .or. iy /= size(bb,dim=2)) then
-    print *, 'writeppm error: red and blue arrays not same size'
-    stop 1
-  endif
+  end subroutine writeppm_3x2d
 
-  if (iplain) then
-    open(newunit=fid, file = filename, status = 'replace')
-  else
-    open(newunit=fid, file = tmpfile, status = 'replace')
-  endif
 
-  write(fid, '(a)') 'P3'
-  write(fid, '(i5,1x,i5)') ix, iy
-  write(fid, '(i5)') nmax
-  write(fid, '(10(i3,1x))') ((rr(i,j),gg(i,j),bb(i,j), i=1,ix), j=1,iy)
-  close(fid)
+  subroutine writeppm_1x3d(filename, aa, mx, is_ascii, ierr)
+    character(len=*), intent(in)   :: filename
+    integer, intent(in)            :: aa(:,:,:)
+    integer, intent(in), optional  :: mx
+    logical, intent(in), optional  :: is_ascii
+    integer, intent(out), optional :: ierr
+!
+! Write PPM file. Just a wrapper to "writepnm_3d"
+!
+    integer :: mx0
 
-  ! do system call to convert to raw and delete tempfile
-  if (.not. iplain) call convert_plain2raw(filename)
-! -----------------------------------------------------------------------------
-  end subroutine writeppm
-! -----------------------------------------------------------------------------
+    if (present(mx)) then
+      mx0 = mx
+    else
+      mx0 = MX_DEFAULT
+    end if
 
+    if (size(aa,1)/=3) then
+      if (present(ierr)) then
+        ierr = -3
+        return
+      else
+        error stop 'writeppm: first extent of aa must be 3'
+      end if
+    end if
+
+    call writepnm_3d(filename, aa, mx0, is_ascii, ierr)
+
+  end subroutine writeppm_1x3d
 
 
 ! -----------------------------------------------------------------------------
@@ -558,34 +578,6 @@ print *, 'assign colormap :',fmin,fmax
 
 
 
-! -----------------------------------------------------------------------------
-  subroutine convert_plain2raw(raw)
-    character(len=*), intent(in) :: raw
-    integer :: istat, cmdstat, fid
-
-    ! call pnmtopnm to convert from plain to raw
-    call execute_command_line( &
-      & 'pnmtopnm '//trim(tmpfile)//' > '//trim(raw), exitstat=istat, cmdstat=cmdstat)
-
-    if (istat /= 0 .or. cmdstat /= 0) then
-      ! if conversion failed leave file in plain format and just rename it
-      print '("PNMIO info: Conversion failed. Fail-back to plain format")'
-      call execute_command_line( &
-        & 'mv '//trim(tmpfile)//' '//trim(raw), exitstat=istat)
-      if (istat /= 0) then
-        print '("PNMIO Error: mv command did not work")'
-        stop 1
-      end if
-    else
-      ! delete a temporaty file if conversion succeeded
-      open(newunit=fid, file=tmpfile, status='old', iostat=istat)
-      if (istat /= 0) error stop 'opening tmpfile failed'
-      close(fid, status='delete')
-    end if
-  end subroutine convert_plain2raw
-! -----------------------------------------------------------------------------
-
-
 ! ---------------------------------
 ! helper procedures for stream read
 ! ---------------------------------
@@ -708,9 +700,9 @@ print *, 'assign colormap :',fmin,fmax
   end subroutine consume_decimal
 
 
-  subroutine consume_header(fid, p, w, h, maxval, ierr)
+  subroutine consume_header(fid, p, w, h, mxval, ierr)
     integer, intent(in)  :: fid
-    integer, intent(out) :: p, w, h, maxval, ierr
+    integer, intent(out) :: p, w, h, mxval, ierr
 
     ! read header of an PPM image
     ! assuming "fid" is opened as "unformatted stream"
@@ -724,10 +716,10 @@ print *, 'assign colormap :',fmin,fmax
       if (ierr /= 0) exit HDR
       ! "maxval" is not defined for PBM format (P1 or P4)
       if (p/=1 .and. p/=4) then
-        call consume_decimal(fid, maxval, ierr)
+        call consume_decimal(fid, mxval, ierr)
         if (ierr /= 0) exit HDR
       else
-        maxval = 1
+        mxval = 1
       end if
       ierr = 0
       return
@@ -789,7 +781,7 @@ print *, 'assign colormap :',fmin,fmax
         r2b = u2s_16(u)
       end if
 
-    else 
+    else
       error stop 'consume_raster: unreachable'
     end if
 
@@ -797,9 +789,10 @@ print *, 'assign colormap :',fmin,fmax
   end subroutine consume_raster
 
 
-  !
-  ! Conversion from signed to unsigned numbers
-  !
+! ------------------------------------------
+! Conversion from signed to unsigned numbers
+! ------------------------------------------
+
   elemental function s2u_8(sint) result (uint)
     integer(int8), intent(in) :: sint
     integer :: uint
@@ -811,6 +804,7 @@ print *, 'assign colormap :',fmin,fmax
     end if
   end function
 
+
   elemental function s2u_16(sint) result (uint)
     integer(int16), intent(in) :: sint
     integer :: uint
@@ -821,6 +815,7 @@ print *, 'assign colormap :',fmin,fmax
       uint = 2*(huge(sint)+1) + int(sint, kind=kind(uint))
     end if
   end function
+
 
   elemental function u2s_8(u) result (s)
     integer, intent(in) :: u
@@ -836,6 +831,7 @@ print *, 'assign colormap :',fmin,fmax
       error stop 'u2s_8 input too big to convert'
     end if
   end function
+
 
   elemental function u2s_16(u) result (s)
     integer, intent(in) :: u
