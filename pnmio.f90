@@ -32,7 +32,7 @@
 ! -----------------------------------------------------------------------------
   module pnmio_module
 ! -----------------------------------------------------------------------------
-  use iso_fortran_env, only : error_unit, int8, int16
+  use iso_fortran_env, only : error_unit, int8, int16, iostat_end
   implicit none
   private
   public readpnm, writepgm, writeppm, colormap, assign_colormap
@@ -149,20 +149,17 @@
         allocate(aa(1,w,h))
         if (mx > 255) then
           allocate(raster_2b(w*h))
-        else if (mx == 1) then
-          ! PBM
-          error stop 'reading binary PBM not implemented' ! TODO
         else
           allocate(raster_1b(w*h))
         end if
       end if
 
       if (mx > 255) then
-        call consume_raster(fid, p, ierr0, r2b=raster_2b)
+        call consume_raster(fid, p, w, ierr0, r2b=raster_2b)
         if (ierr0 /= 0) exit BLK
         aa = reshape(s2u(raster_2b), shape(aa))
       else
-        call consume_raster(fid, p, ierr0, r1b=raster_1b)
+        call consume_raster(fid, p, w, ierr0, r1b=raster_1b)
         if (ierr0 /= 0) exit BLK
         aa = reshape(s2u(raster_1b), shape(aa))
       end if
@@ -244,19 +241,33 @@
       end if
 
       ! open file
+     !open(newunit=fid, file=filename, status='replace', access='stream', &
+     !  form='formatted', iostat=ios, iomsg=iomsg)
       open(newunit=fid, file=filename, status='replace', access='stream', &
-        form='formatted', iostat=ios, iomsg=iomsg)
+        form='unformatted', iostat=ios, iomsg=iomsg)
       if (ios /= 0) then
         write(error_unit,'(a)') 'opening file for writting iomsg: '//trim(iomsg)
         exit BLK
       end if
 
       ! write header
-      write(magick,'(i1)') p
-      write(fid,'(a)') 'P'//magick
-      write(fid,'(a)') '# xreated by pnmio fortran library'
-      write(fid,'(i0,1x,i0)') w, h
-      if (mod(p,3)/=1) write(fid,'(i0)') mx
+      HEADER: block
+        ! Note to myself: I preffer to do formatting via internal
+        ! character storage instead of "formatted stream"
+        character(len=100) buf
+        write(magick,'(i1)') p
+        write(buf,'(a)') 'P'//magick
+        write(fid) trim(buf)//new_line(buf)
+        write(buf,'(a)') '# xreated by pnmio fortran library'
+        write(fid) trim(buf)//new_line(buf)
+        write(buf,'(i0,1x,i0)') w, h
+        write(fid) trim(buf)//new_line(buf)
+
+        if (mod(p,3)/=1) then
+          write(buf,'(i0)') mx
+          write(fid) trim(buf)//achar(10)
+        end if
+      end block HEADER
 
       ! write raster
       if (p > 3) then
@@ -264,19 +275,6 @@
         BINARY: block
           integer(int8), allocatable :: raster_1b(:)
           integer(int16), allocatable :: raster_2b(:)
-
-          ! re-open as "unformatted"
-          close(fid, iostat=ios, iomsg=iomsg)
-          if (ios /= 0) then
-            write(error_unit,'(a)') 'closing to reopen file iomsg: '//trim(iomsg)
-            exit BLK
-          end if
-          open(newunit=fid, file=filename, status='old', access='stream', &
-          form='unformatted', position='append', iostat=ios, iomsg=iomsg)
-          if (ios /= 0) then
-            write(error_unit,'(a)') 'reopening file iomsg: '//trim(iomsg)
-            exit BLK
-          end if
 
           ! write raster (1B or 2B)
           if (mx > 255) then
@@ -287,8 +285,25 @@
             end if
             write(fid, iostat=ios, iomsg=iomsg) reshape(u2s_16(aa), shape(raster_2b))
           elseif (mx == 1) then
-            ! PBM
-            error stop 'binary PBM not yet implemented' ! TODO
+            PBM: block ! PBM
+              integer :: wc, irow, icol, j, k
+              integer(int8), allocatable :: r8(:)
+              wc = w/8
+              if (mod(w,8)/=0) wc=wc+1
+              allocate(r8(wc))
+              do irow=1, h
+                r8 = 0
+                icol = 0
+                JLOOP: do j=1, wc
+                  do k=bit_size(r8)-1,0,-1
+                    icol = icol + 1
+                    if (aa(1,icol,irow)==1) r8(j) = ibset(r8(j),k)
+                    if (icol==w) exit JLOOP
+                  end do
+                end do JLOOP
+                write(fid, iostat=ios, iomsg=iomsg) r8
+              end do
+            end block PBM
           else
             if (p==6) then
               allocate(raster_1b(3*w*h)) ! PPM
@@ -310,6 +325,19 @@
           ! per line must be less than 70
           character(len=*), parameter :: fmt_short='(17(i3,1x))'
           character(len=*), parameter :: fmt_long='(11(i5,1x))'
+
+          ! re-open as "formatted"
+          close(fid, iostat=ios, iomsg=iomsg)
+          if (ios /= 0) then
+            write(error_unit,'(a)') 'closing to reopen file iomsg: '//trim(iomsg)
+            exit BLK
+          end if
+          open(newunit=fid, file=filename, status='old', access='stream', &
+          form='formatted', position='append', iostat=ios, iomsg=iomsg)
+          if (ios /= 0) then
+            write(error_unit,'(a)') 'reopening file iomsg: '//trim(iomsg)
+            exit BLK
+          end if
           if (mx > 255) then
             write(fid,fmt=fmt_long,iostat=ios,iomsg=iomsg) aa
           else
@@ -654,6 +682,8 @@ print *, 'assign colormap :',fmin,fmax
     do
       read(fid, iostat=ios, pos=pos, iomsg=iomsg) ch
       pos = pos + 1
+      ! if the last digit is at the very end, this is not an error
+      if (ios == iostat_end .and. mode==MODE_READ) exit
       if (ios /= 0) then
         write(error_unit,'(a)') 'consume_decimal iomsg: '//trim(iomsg)
         return
@@ -731,14 +761,15 @@ print *, 'assign colormap :',fmin,fmax
   end subroutine consume_header
 
 
-  subroutine consume_raster(fid, p, ierr, r1b, r2b)
-    integer, intent(in) :: fid, p
+  subroutine consume_raster(fid, p, w, ierr, r1b, r2b)
+    integer, intent(in) :: fid, p, w
     integer, intent(out) :: ierr
     integer(int8), intent(out), optional :: r1b(:)
     integer(int16), intent(out), optional :: r2b(:)
 
     ! assuming "fid" is opened as "unformatted stream"
-    integer :: ios, i
+    ! "W" is needed for P4 format only
+    integer :: ios
     character(len=IOMSG_MAXLEN) :: iomsg
     integer, allocatable :: u(:)
 
@@ -748,7 +779,26 @@ print *, 'assign colormap :',fmin,fmax
 
     if ((p-1)/3 == 1) then
       ! binary format
-      if (present(r1b)) then
+      if (p==4) then
+        PBM: block ! special case for binary PBM
+          integer :: wc, h, i, j, k
+          integer(int8), allocatable :: r8(:)
+          h = size(r1b)/w
+          wc = w/8
+          if (mod(w,8)/=0) wc = wc+1
+          allocate(r8(h*wc))
+          read(fid, iostat=ios, iomsg=iomsg) r8
+          r1b = 0
+          i = 0
+          JLOOP: do j=1, size(r8)
+            do k=bit_size(r8)-1,0,-1
+              i = i+1
+              if (btest(r8(j),k)) r1b(i) = 1
+              if (mod(i,w)==0) cycle JLOOP
+            end do
+            end do JLOOP
+        end block PBM
+      else if (present(r1b)) then
         read(fid, iostat=ios, iomsg=iomsg) r1b
       else
         read(fid, iostat=ios, iomsg=iomsg) r2b
@@ -766,13 +816,16 @@ print *, 'assign colormap :',fmin,fmax
         allocate(u(size(r2b)))
       end if
 
-      do i=1, size(u)
-        call consume_decimal(fid, u(i), ierr)
-        if (ierr /= 0) then
-          write(error_unit, '("raster raw error at posiiton ",i0," out of ",i0)') i, size(u)
-          return
-        end if
-      end do
+      ASCII: block
+        integer :: i
+        do i=1, size(u)
+          call consume_decimal(fid, u(i), ierr)
+          if (ierr /= 0) then
+            write(error_unit, '("raster raw error at posiiton ",i0," out of ",i0)') i, size(u)
+            return
+          end if
+        end do
+      end block ASCII
 
       ! convert to unsigned so it fits to 1B or 2B integers
       if (present(r1b)) then
