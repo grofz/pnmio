@@ -101,7 +101,7 @@
 !   - rows containing W tuples (second index is column id)
 !   - raster containing H rows (third index is row id)
 !
-    integer :: p, w, h, mx, ierr0, ios, fid
+    integer :: p, w, h, mx, ierr0, ios, fid, fsize, fpos
     character(len=IOMSG_MAXLEN) :: iomsg
     logical :: file_exist
     integer(int8), allocatable :: raster_1b(:)
@@ -151,6 +151,16 @@
         call consume_raster(fid, p, ierr0, r2b=raster_2b)
         if (ierr0 /= 0) exit BLK
         aa = reshape(s2u(raster_2b), shape(aa))
+      end if
+
+      if ((p-1)/3==1) then
+        ! P4, P5 and P6 can contain more images in single file
+        inquire(fid, size=fsize, pos=fpos)
+        if (fpos-1 < fsize) then
+          print '("File size ",i0,". File position ",i0)', fsize, fpos
+          write(error_unit,'("Warning readpnm: file contains more images")')
+          ! TODO ignoring for now
+        end if
       end if
 
       if (present(ierr)) ierr = 0
@@ -586,7 +596,7 @@ print *, 'assign colormap :',fmin,fmax
     ! Assuming white space is a character with ASCII code between
     ! 9 and 13 (TAB, LF, VT, FF, CR) or a space
     is_whitespace = (iachar(ch)>=9 .and. iachar(ch)<=13) .or. ch==' '
-  end function
+  end function is_whitespace
 
 
   pure logical function is_newline(ch)
@@ -594,7 +604,7 @@ print *, 'assign colormap :',fmin,fmax
 
     ! Assuming new line is LF
     is_newline = iachar(ch) == 10 ! iachar(new_line(ch))
-  end function
+  end function is_newline
 
 
   subroutine consume_magick(fid, val)
@@ -626,7 +636,7 @@ print *, 'assign colormap :',fmin,fmax
     case('P6')
       val = 6
     end select
-  end subroutine
+  end subroutine consume_magick
 
 
   subroutine consume_decimal(fid, val, ierr)
@@ -695,7 +705,7 @@ print *, 'assign colormap :',fmin,fmax
     end if
 
     ierr = 0 ! "val" read withou any error
-  end subroutine
+  end subroutine consume_decimal
 
 
   subroutine consume_header(fid, p, w, h, maxval, ierr)
@@ -726,7 +736,7 @@ print *, 'assign colormap :',fmin,fmax
     ! an error occurred
     ierr = -1
     write(error_unit,'(a)') 'error: header is invalid'
-  end subroutine
+  end subroutine consume_header
 
 
   subroutine consume_raster(fid, p, ierr, r1b, r2b)
@@ -757,7 +767,7 @@ print *, 'assign colormap :',fmin,fmax
       end if
 
     else if ((p-1)/3 == 0) then
-      ! raw format (ASCII)
+      ! ASCII digits
       if (present(r1b)) then
         allocate(u(size(r1b)))
       else
@@ -778,6 +788,9 @@ print *, 'assign colormap :',fmin,fmax
       else
         r2b = u2s_16(u)
       end if
+
+    else 
+      error stop 'consume_raster: unreachable'
     end if
 
     ierr = 0
