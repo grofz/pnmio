@@ -11,10 +11,10 @@
 !  *interface s2u
 !  *subroutine readpnm_2d(filename, aa, ierr)
 !  *subroutine readpnm_3d(filename, aa, ierr)
-!  *subroutine writepnm_3d(filename, aa, mx, is_ascii, ierr)
-!   subroutine writepgm(filename, aa, mx, is_ascii, ierr)
-!  *subroutine writeppm_3x2d(filename, rr, gg, bb, mx, is_ascii, ierr)
-!  *subroutine writeppm_1x3d(filename, aa, mx, is_ascii, ierr)
+!  *subroutine writepnm_3d(filename, aa, mx, is_plain, ierr)
+!   subroutine writepgm(filename, aa, mx, is_plain, ierr)
+!  *subroutine writeppm_3x2d(filename, rr, gg, bb, mx, is_plain, ierr)
+!  *subroutine writeppm_1x3d(filename, aa, mx, is_plain, ierr)
 !   subroutine colormap(red,green,blue)
 !  *subroutine assign_colormap_int(aa,rr,gg,bb,n,imin,imax,iwh,ibl)
 !  *subroutine assign_colormap_2R(uu,rr,gg,bb,n,rmin,rmax)
@@ -192,18 +192,18 @@
 ! Write PNM files
 ! ---------------
 
-  subroutine writepnm_3d(filename, aa, mx, is_ascii, ierr)
+  subroutine writepnm_3d(filename, aa, mx, is_plain, ierr)
     character(len=*), intent(in) :: filename
     integer, intent(in) :: aa(:,:,:)
     integer, intent(in) :: mx
-    logical, intent(in), optional :: is_ascii
+    logical, intent(in), optional :: is_plain
     integer, intent(out), optional :: ierr
 !
 ! PPM - first dimension of "aa" is 3, mx > 1   (P3/P6)
 ! PGM - first dimension of "aa" is 1, mx > 1   (P2/P5)
 ! PBM - first dimension of "aa" is 1, mx == 1  (P1/P4)
 !
-! default is binary (unless is_ascii==.T. is present)
+! default is raw (unless is_plain==.T. is present)
 !
     integer :: p, w, h, ierr0, ios, fid
     character(len=IOMSG_MAXLEN) :: iomsg
@@ -214,6 +214,11 @@
     ierr0 = -1
 
     BLK: block
+      ! verify data are in the range (0, mx)
+      if (any(aa<0) .or. any(aa>mx)) then
+        write(error_unit,'("All values must be in range (0,mx)")')
+        exit BLK
+      end if
 
       ! identify P
       if (size(aa,dim=1)==1) then
@@ -236,8 +241,8 @@
         write(error_unit,'("first extent of aa must be 1 or 3")')
         exit BLK
       end if
-      if (present(is_ascii)) then
-        if (is_ascii) p = p-3
+      if (present(is_plain)) then
+        if (is_plain) p = p-3
       end if
 
       ! open file
@@ -371,11 +376,11 @@
   end subroutine writepnm_3d
 
 
-  subroutine writepgm(filename, aa, mx, is_ascii, ierr)
+  subroutine writepgm(filename, aa, mx, is_plain, ierr)
     character(len=*), intent(in)   :: filename
     integer, intent(in)            :: aa(:,:)
     integer, intent(in), optional  :: mx
-    logical, intent(in), optional  :: is_ascii
+    logical, intent(in), optional  :: is_plain
     integer, intent(out), optional :: ierr
 !
 ! Write PGM or PBM file. Just a wrapper to "writepnm_3d"
@@ -392,16 +397,16 @@
     end if
     allocate(atmp(1, size(aa,1), size(aa,2)))
     atmp(1,:,:) = aa
-    call writepnm_3d(filename, atmp, mx0, is_ascii, ierr)
+    call writepnm_3d(filename, atmp, mx0, is_plain, ierr)
 
   end subroutine writepgm
 
 
-  subroutine writeppm_3x2d(filename, rr, gg, bb, mx, is_ascii, ierr)
+  subroutine writeppm_3x2d(filename, rr, gg, bb, mx, is_plain, ierr)
     character(len=*), intent(in)   :: filename
     integer, intent(in)            :: rr(:,:), gg(:,:), bb(:,:)
     integer, intent(in), optional  :: mx
-    logical, intent(in), optional  :: is_ascii
+    logical, intent(in), optional  :: is_plain
     integer, intent(out), optional :: ierr
 !
 ! Write PPM file. Just a wrapper to "writepnm_3d"
@@ -428,16 +433,16 @@
     atmp(1,:,:) = rr
     atmp(2,:,:) = gg
     atmp(3,:,:) = bb
-    call writepnm_3d(filename, atmp, mx0, is_ascii, ierr)
+    call writepnm_3d(filename, atmp, mx0, is_plain, ierr)
 
   end subroutine writeppm_3x2d
 
 
-  subroutine writeppm_1x3d(filename, aa, mx, is_ascii, ierr)
+  subroutine writeppm_1x3d(filename, aa, mx, is_plain, ierr)
     character(len=*), intent(in)   :: filename
     integer, intent(in)            :: aa(:,:,:)
     integer, intent(in), optional  :: mx
-    logical, intent(in), optional  :: is_ascii
+    logical, intent(in), optional  :: is_plain
     integer, intent(out), optional :: ierr
 !
 ! Write PPM file. Just a wrapper to "writepnm_3d"
@@ -459,7 +464,7 @@
       end if
     end if
 
-    call writepnm_3d(filename, aa, mx0, is_ascii, ierr)
+    call writepnm_3d(filename, aa, mx0, is_plain, ierr)
 
   end subroutine writeppm_1x3d
 
