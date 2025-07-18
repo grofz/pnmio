@@ -24,7 +24,14 @@
 ! (*) private objects
 
 ! SHORT DESCRIPTION
-! These routines work 'raw' or 'plain' PNM formats (P4 - not yet implemented)
+! These routines work with 'raw' or 'plain' PNM formats (P1,P2,P3,P4,P5,P6)
+!
+! Catching errors:
+! If an optional argument "ierr" is provided
+! - "ierr" on return contains "0" -> no errors
+! - nonzero "ierr" on output -> error occurred, messages sent to stderr
+! If "ierr" is not provided
+! - in the case of error, program stops
 
 
 ! WEB: https://netpbm.sourceforge.net/doc/pnm.html
@@ -32,13 +39,14 @@
 ! -----------------------------------------------------------------------------
   module pnmio_module
 ! -----------------------------------------------------------------------------
-  use iso_fortran_env, only : error_unit, int8, int16, iostat_end
+  use iso_fortran_env, only : error_unit, int8, int16, iostat_end, &
+      DP=>real64, SP=>real32
   implicit none
   private
   public readpnm, writepgm, writeppm, colormap, assign_colormap
 
   ! default value of optional MAXVAL argument
-  integer, parameter :: MX_DEFAULT = 255
+  integer, parameter :: MX_DEFAULT = 255, MX_DEFAULT_16 = 65535
 
   integer, parameter :: IOMSG_MAXLEN = 100
 
@@ -164,14 +172,21 @@
         aa = reshape(s2u(raster_1b), shape(aa))
       end if
 
+      ! P4, P5 and P6 can contain more images in single file
       if ((p-1)/3==1) then
-        ! P4, P5 and P6 can contain more images in single file
         inquire(fid, size=fsize, pos=fpos)
         if (fpos-1 < fsize) then
           print '("File size ",i0,". File position ",i0)', fsize, fpos
           write(error_unit,'("Warning readpnm: file contains more images")')
           ! TODO ignoring for now
         end if
+      end if
+
+      ! verify valid values have been read
+      if (any(aa<0) .or. any(aa>mx)) then
+        write(error_unit,'("the file contains values out of range (0,mx)")')
+        ierr0 = -2
+        exit BLK
       end if
 
       if (present(ierr)) ierr = 0
@@ -246,10 +261,8 @@
       end if
 
       ! open file
-     !open(newunit=fid, file=filename, status='replace', access='stream', &
-     !  form='formatted', iostat=ios, iomsg=iomsg)
       open(newunit=fid, file=filename, status='replace', access='stream', &
-        form='unformatted', iostat=ios, iomsg=iomsg)
+          form='unformatted', iostat=ios, iomsg=iomsg)
       if (ios /= 0) then
         write(error_unit,'(a)') 'opening file for writting iomsg: '//trim(iomsg)
         exit BLK
@@ -263,20 +276,20 @@
         write(magick,'(i1)') p
         write(buf,'(a)') 'P'//magick
         write(fid) trim(buf)//new_line(buf)
-        write(buf,'(a)') '# xreated by pnmio fortran library'
+        write(buf,'(a)') '# created by pnmio fortran library'
         write(fid) trim(buf)//new_line(buf)
         write(buf,'(i0,1x,i0)') w, h
         write(fid) trim(buf)//new_line(buf)
 
         if (mod(p,3)/=1) then
           write(buf,'(i0)') mx
-          write(fid) trim(buf)//achar(10)
+          write(fid) trim(buf)//new_line(buf)
         end if
       end block HEADER
 
       ! write raster
       if (p > 3) then
-        ! binary format
+        ! raw format
         BINARY: block
           integer(int8), allocatable :: raster_1b(:)
           integer(int16), allocatable :: raster_2b(:)
@@ -284,9 +297,9 @@
           ! write raster (1B or 2B)
           if (mx > 255) then
             if (p==6) then
-              allocate(raster_2b(3*w*h)) ! PPM (2 bytes)
+              allocate(raster_2b(3*w*h)) ! PPM (16 bit)
             else
-              allocate(raster_2b(w*h))   ! PGM (2 bytes)
+              allocate(raster_2b(w*h))   ! PGM (16 bit)
             end if
             write(fid, iostat=ios, iomsg=iomsg) reshape(u2s_16(aa), shape(raster_2b))
           elseif (mx == 1) then
@@ -309,6 +322,7 @@
                 write(fid, iostat=ios, iomsg=iomsg) r8
               end do
             end block PBM
+
           else
             if (p==6) then
               allocate(raster_1b(3*w*h)) ! PPM
@@ -324,7 +338,7 @@
         end block BINARY
 
       else
-        ! ascii format
+        ! plain format
         ASCII: block
           ! as of netpnm format specification, maximum number of characters
           ! per line must be less than 70
@@ -338,7 +352,7 @@
             exit BLK
           end if
           open(newunit=fid, file=filename, status='old', access='stream', &
-          form='formatted', position='append', iostat=ios, iomsg=iomsg)
+              form='formatted', position='append', iostat=ios, iomsg=iomsg)
           if (ios /= 0) then
             write(error_unit,'(a)') 'reopening file iomsg: '//trim(iomsg)
             exit BLK
@@ -348,11 +362,11 @@
           else
             write(fid,fmt=fmt_short,iostat=ios,iomsg=iomsg) aa
           end if
+          if (ios /= 0) then
+            write(error_unit,'(a)') 'writing ASCII raster iomsg: '//trim(iomsg)
+            exit BLK
+          end if
         end block ASCII
-        if (ios /= 0) then
-          write(error_unit,'(a)') 'writing ASCII raster iomsg: '//trim(iomsg)
-          exit BLK
-        end if
       end if
 
       ! close file
@@ -383,21 +397,15 @@
     logical, intent(in), optional  :: is_plain
     integer, intent(out), optional :: ierr
 !
-! Write PGM or PBM file. Just a wrapper to "writepnm_3d"
+! Write PGM or PBM file. Public wrapper to "writepnm_3d"
 ! PBM - if "mx" is present and "mx==1"
 ! PGM - otherwise
 !
-    integer :: mx0
     integer, allocatable :: atmp(:,:,:)
 
-    if (present(mx)) then
-      mx0 = mx
-    else
-      mx0 = MX_DEFAULT
-    end if
     allocate(atmp(1, size(aa,1), size(aa,2)))
     atmp(1,:,:) = aa
-    call writepnm_3d(filename, atmp, mx0, is_plain, ierr)
+    call writepnm_3d(filename, atmp, guess_mx(atmp,mx), is_plain, ierr)
 
   end subroutine writepgm
 
@@ -409,16 +417,9 @@
     logical, intent(in), optional  :: is_plain
     integer, intent(out), optional :: ierr
 !
-! Write PPM file. Just a wrapper to "writepnm_3d"
+! Write PPM file. Public wrapper to "writepnm_3d"
 !
-    integer :: mx0
     integer, allocatable :: atmp(:,:,:)
-
-    if (present(mx)) then
-      mx0 = mx
-    else
-      mx0 = MX_DEFAULT
-    end if
 
     if (any(shape(rr) /= shape(gg)) .or. any(shape(rr) /= shape(bb))) then
       if (present(ierr)) then
@@ -433,7 +434,7 @@
     atmp(1,:,:) = rr
     atmp(2,:,:) = gg
     atmp(3,:,:) = bb
-    call writepnm_3d(filename, atmp, mx0, is_plain, ierr)
+    call writepnm_3d(filename, atmp, guess_mx(atmp,mx), is_plain, ierr)
 
   end subroutine writeppm_3x2d
 
@@ -445,16 +446,8 @@
     logical, intent(in), optional  :: is_plain
     integer, intent(out), optional :: ierr
 !
-! Write PPM file. Just a wrapper to "writepnm_3d"
+! Write PPM file. Public wrapper to "writepnm_3d"
 !
-    integer :: mx0
-
-    if (present(mx)) then
-      mx0 = mx
-    else
-      mx0 = MX_DEFAULT
-    end if
-
     if (size(aa,1)/=3) then
       if (present(ierr)) then
         ierr = -3
@@ -464,151 +457,187 @@
       end if
     end if
 
-    call writepnm_3d(filename, aa, mx0, is_plain, ierr)
+    call writepnm_3d(filename, aa, guess_mx(aa,mx), is_plain, ierr)
 
   end subroutine writeppm_1x3d
 
 
-! -----------------------------------------------------------------------------
-  subroutine colormap(red,green,blue)
-! -----------------------------------------------------------------------------
+! ----------------------
+! Working with colormaps
+! ----------------------
+!https://blog.habrador.com/2023/04/colormaps-overview-code-implementations-rainbow-virids.html
+
+  subroutine colormap2(red, green, blue)
+    integer, intent(out) :: red(0:), green(0:), blue(0:)
+
+    integer :: n, i, bc
+    real :: x, s, yr, yg, yb
+
+    n = size(red)-2
+
+    do i=1, n
+      ! x in range <0, 1>
+      x = real(i-1)/real(n-1)
+      ! bc is 0, 1, 2, 3
+      bc = min(3, int(4.0*x))
+      ! s is between 0 and 1
+      s = (x - bc*0.25) / 0.25
+
+      select case (bc)
+      case(0) ! blue (0,0,1) -- cyan (0,1,1)
+        yr = 0.0;  yg = s;  yb = 1.0
+      case(1) ! cyan (0,1,1) -- green (0,1,0)
+        yr = 0.0; yg = 1.0; yb = 1.0-s
+      case(2) ! green (0,1,0) -- yellow (1,1,0)
+        yr = s; yg = 1.0; yb = 0.0
+      case(3) ! yellow (1,1,0) -- red (1,0,0)
+        yr = 1.0; yg = 1.0-s; yb = 0.0
+      case default
+        error stop
+      end select
+      red(i) = int(yr*255)
+      green(i) = int(yg*255)
+      blue(i) = int(yb*255)
+    end do
+
+    ! white / black colours for first/last colormap element
+    red(0) = 255; red(n+1) = 0
+    green(0) = 255; green(n+1) = 0
+    blue(0) = 255; blue(n+1) = 0
+
+  end subroutine colormap2
+
+
+  subroutine colormap(red, green, blue)
+    integer, intent(out) :: red(:), green(:), blue(:)
+!
 ! Generate colormap (blue  cyan  green  yellow  red)
-! First and last colors are white and black, respectivelly
+! First and last colours are white and black, respectivelly
+!
+    integer, parameter :: mxval = 254
+    integer            :: n, i
+    real :: x, yr, yb, yg
 
-  integer, intent(out) :: red(:), green(:), blue(:)
+    n = size(red,dim=1)
 
-  ! - local vars
-  integer, parameter :: mxval = 254
-  integer            :: n, i
+    do i = 2, n-1
+      x = real(i-2) / real(n-3) ! x will be in range (0;1)
 
-  real :: x, yr, yb, yg
-  ! -
-  n = size(red,dim=1)
+      yr =  4.0*x - 2.0
+      yb = -4.0*x + 2.0
+      if(x<0.5) then
+        yg =  4.0*x + 0.0
+      else
+        yg = -4.0*x + 4.0
+      endif
 
-  do i=2,n-1
-    x = float(i-2) / float(n-3) ! x will be in range (0;1)
+      yr = max(0.0, yr)
+      yg = max(0.0, yg)
+      yb = max(0.0, yb)
+      yr = min(1.0, yr)
+      yg = min(1.0, yg)
+      yb = min(1.0, yb)
 
-    yr =  4.*x - 2.
-    yb = -4.*x + 2.
-    if(x<0.5) then
-      yg =  4.*x + 0.
-    else
-      yg = -4.*x + 4.
+      red(i)   = int(yr*real(mxval+1)) ! values will be between 0..mxval
+      green(i) = int(yg*real(mxval+1))
+      blue(i)  = int(yb*real(mxval+1))
+
+    enddo
+
+    ! white / black colours for first/last colormap element
+    red(1) = mxval; red(n) = 0
+    green(1) = mxval; green(n) = 0
+    blue(1) = mxval; blue(n) = 0
+
+  end subroutine colormap
+
+
+  subroutine assign_colormap_int(aa,rr,gg,bb,n,imin,imax,iwh,ibl)
+    integer, intent(in)  :: aa(:,:)
+    integer, intent(out) :: rr(:,:), gg(:,:), bb(:,:)
+    integer, intent(in)  :: n
+    integer, intent(in), optional :: imin, imax, iwh, ibl
+
+    ! - local vars
+    integer :: cmap(n,3)
+    real    :: dx, fmin, fmax, f
+    integer :: i, j, m, nx, ny
+
+    ! -
+    call colormap2(cmap(:,1),cmap(:,2),cmap(:,3))
+!   call colormap(cmap(:,1),cmap(:,2),cmap(:,3))
+
+    fmin = real(minval(aa))
+    fmax = real(maxval(aa))
+    if (present(imin)) fmin = real(imin)
+    if (present(imax)) fmax = real(imax)
+    nx = size(aa,dim=1)
+    ny = size(aa,dim=2)
+print *, 'assign colormap for values between:', fmin, fmax
+
+    ! to elements aa==fmin assign 2nd color,
+    ! to elements aa==fmax assign (n-1)th color
+    ! 1st and nth colors are reserved for out of range elements, or iwh,ibl
+
+    dx = (fmax-fmin)/float(n-3)
+
+    do i=1,nx
+    do j=1,ny
+      f = (float(aa(i,j)) - fmin) / dx
+      m = int(f) + 2
+      m = min(max(1,m),n)
+      rr(i,j) = cmap(m,1)
+      gg(i,j) = cmap(m,2)
+      bb(i,j) = cmap(m,3)
+    enddo
+    enddo
+
+    if (present(iwh)) then
+      where(aa==iwh)
+        rr = cmap(1,1)
+        gg = cmap(1,2)
+        bb = cmap(1,3)
+      endwhere
+    endif
+    if (present(ibl)) then
+      where(aa==ibl)
+        rr = cmap(n,1)
+        gg = cmap(n,2)
+        bb = cmap(n,3)
+      endwhere
     endif
 
-    yr = max(0.,yr)
-    yg = max(0.,yg)
-    yb = max(0.,yb)
-    yr = min(1.,yr)
-    yg = min(1.,yg)
-    yb = min(1.,yb)
-
-    red(i)   = int(yr*float(mxval+1)) ! values will be between 0..mxval
-    green(i) = int(yg*float(mxval+1))
-    blue(i)  = int(yb*float(mxval+1))
-
-  enddo
-
-  red(1) = mxval; red(n) = 0
-  green(1) = mxval; green(n) = 0
-  blue(1) = mxval; blue(n) = 0
-! -----------------------------------------------------------------------------
-  end subroutine colormap
-! -----------------------------------------------------------------------------
-
-
-
-! -----------------------------------------------------------------------------
-  subroutine assign_colormap_int(aa,rr,gg,bb,n,imin,imax,iwh,ibl)
-! -----------------------------------------------------------------------------
-  integer, intent(in)  :: aa(:,:)
-  integer, intent(out) :: rr(:,:), gg(:,:), bb(:,:)
-  integer, intent(in)  :: n
-  integer, intent(in), optional :: imin, imax, iwh, ibl
-
-  ! - local vars
-
-  integer :: cmap(n,3)
-  real    :: dx, fmin, fmax, f
-  integer :: i, j, m, nx, ny
-
-  ! -
-  call colormap(cmap(1:n,1),cmap(1:n,2),cmap(1:n,3))
-
-  fmin = float(minval(aa))
-  fmax = float(maxval(aa))
-  if (present(imin)) fmin = float(imin)
-  if (present(imax)) fmax = float(imax)
-  nx = size(aa,dim=1)
-  ny = size(aa,dim=2)
-print *, 'assign colormap :',fmin,fmax
-
-  ! to elements aa==fmin assign 2nd color,
-  ! to elements aa==fmax assign (n-1)th color
-  ! 1st and nth colors are reserved for elements out of bond, or iwh,ibl
-
-  dx = (fmax-fmin)/float(n-3)
-
-  do i=1,nx
-  do j=1,ny
-    f = (float(aa(i,j)) - fmin) / dx
-    m = int(f) + 2
-    m = min(max(1,m),n)
-    rr(i,j) = cmap(m,1);  gg(i,j) = cmap(m,2);  bb(i,j) = cmap(m,3)
-  enddo
-  enddo
-
-  if (present(iwh)) then
-    where(aa==iwh)
-      rr = cmap(1,1)
-      gg = cmap(1,2)
-      bb = cmap(1,3)
-    endwhere
-  endif
-  if (present(ibl)) then
-    where(aa==ibl)
-      rr = cmap(n,1)
-      gg = cmap(n,2)
-      bb = cmap(n,3)
-    endwhere
-  endif
-! -----------------------------------------------------------------------------
   end subroutine assign_colormap_int
-! -----------------------------------------------------------------------------
 
 
-
-! -----------------------------------------------------------------------------
   subroutine assign_colormap_2R(uu,rr,gg,bb,n,rmin,rmax)
-! -----------------------------------------------------------------------------
-  real(8), intent(in)  :: uu(:,:)
-  integer, intent(out) :: rr(:,:), gg(:,:), bb(:,:)
-  integer, intent(in)  :: n
-  real(8), intent(in), optional :: rmin, rmax
+    real(DP), intent(in)  :: uu(:,:)
+    integer, intent(out) :: rr(:,:), gg(:,:), bb(:,:)
+    integer, intent(in)  :: n
+    real(DP), intent(in), optional :: rmin, rmax
 
-  integer :: aa(size(uu,dim=1), size(uu,dim=2))
-  real(8) :: rmin0, rmax0
+    integer :: aa(size(uu,dim=1), size(uu,dim=2))
+    real(DP) :: rmin0, rmax0
 
-  ! -
+    ! -
 
-  if (present(rmin)) then
-    rmin0 = rmin
-  else
-    rmin0 = minval(uu)
-  endif
+    if (present(rmin)) then
+      rmin0 = rmin
+    else
+      rmin0 = minval(uu)
+    endif
 
-  if (present(rmax)) then
-    rmax0 = rmax
-  else
-    rmax0 = maxval(uu)
-  endif
+    if (present(rmax)) then
+      rmax0 = rmax
+    else
+      rmax0 = maxval(uu)
+    endif
 
-  aa = nint((uu-rmin0)/(rmax0-rmin0)*float(n))
-  call assign_colormap_int(aa,rr,gg,bb,n,imin=0,imax=n)
-! -----------------------------------------------------------------------------
+    aa = int((uu-rmin0)/(rmax0-rmin0) * real(n))+1
+!   aa = nint((uu-rmin0)/(rmax0-rmin0)*float(n))
+    call assign_colormap_int(aa,rr,gg,bb,n,imin=0,imax=n)
+
   end subroutine assign_colormap_2R
-! -----------------------------------------------------------------------------
-
 
 
 ! ---------------------------------
@@ -903,6 +932,24 @@ print *, 'assign colormap :',fmin,fmax
       s = int(u-2*(huge(s)+1), kind=kind(s))
     else
       error stop 'u2s_16 input too big to convert'
+    end if
+  end function
+
+
+  integer function guess_mx(aa, mx) result(mx0)
+    integer, intent(in) :: aa(:,:,:)
+    integer, intent(in), optional :: mx
+!
+! Guess the value of "mx" in the case it is not given
+!
+    if (present(mx)) then
+      mx0 = mx
+    else
+      if (maxval(aa) > 255) then
+        mx0 = MX_DEFAULT_16
+      else
+        mx0 = MX_DEFAULT
+      end if
     end if
   end function
 
