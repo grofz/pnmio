@@ -465,47 +465,7 @@
 ! ----------------------
 ! Working with colormaps
 ! ----------------------
-!https://blog.habrador.com/2023/04/colormaps-overview-code-implementations-rainbow-virids.html
 
-  subroutine colormap2(red, green, blue)
-    integer, intent(out) :: red(0:), green(0:), blue(0:)
-
-    integer :: n, i, bc
-    real :: x, s, yr, yg, yb
-
-    n = size(red)-2
-
-    do i=1, n
-      ! x in range <0, 1>
-      x = real(i-1)/real(n-1)
-      ! bc is 0, 1, 2, 3
-      bc = min(3, int(4.0*x))
-      ! s is between 0 and 1
-      s = (x - bc*0.25) / 0.25
-
-      select case (bc)
-      case(0) ! blue (0,0,1) -- cyan (0,1,1)
-        yr = 0.0;  yg = s;  yb = 1.0
-      case(1) ! cyan (0,1,1) -- green (0,1,0)
-        yr = 0.0; yg = 1.0; yb = 1.0-s
-      case(2) ! green (0,1,0) -- yellow (1,1,0)
-        yr = s; yg = 1.0; yb = 0.0
-      case(3) ! yellow (1,1,0) -- red (1,0,0)
-        yr = 1.0; yg = 1.0-s; yb = 0.0
-      case default
-        error stop
-      end select
-      red(i) = int(yr*255)
-      green(i) = int(yg*255)
-      blue(i) = int(yb*255)
-    end do
-
-    ! white / black colours for first/last colormap element
-    red(0) = 255; red(n+1) = 0
-    green(0) = 255; green(n+1) = 0
-    blue(0) = 255; blue(n+1) = 0
-
-  end subroutine colormap2
 
 
   subroutine colormap(red, green, blue)
@@ -514,7 +474,9 @@
 ! Generate colormap (blue  cyan  green  yellow  red)
 ! First and last colours are white and black, respectivelly
 !
-    integer, parameter :: mxval = 254
+! https://blog.habrador.com/2023/04/colormaps-overview-code-implementations-rainbow-virids.html
+!
+    integer, parameter :: mxval = 255
     integer            :: n, i
     real :: x, yr, yb, yg
 
@@ -538,9 +500,9 @@
       yg = min(1.0, yg)
       yb = min(1.0, yb)
 
-      red(i)   = int(yr*real(mxval+1)) ! values will be between 0..mxval
-      green(i) = int(yg*real(mxval+1))
-      blue(i)  = int(yb*real(mxval+1))
+      red(i)   = int(yr*real(mxval)) ! values will be between 0..mxval
+      green(i) = int(yg*real(mxval))
+      blue(i)  = int(yb*real(mxval))
 
     enddo
 
@@ -564,8 +526,7 @@
     integer :: i, j, m, nx, ny
 
     ! -
-    call colormap2(cmap(:,1),cmap(:,2),cmap(:,3))
-!   call colormap(cmap(:,1),cmap(:,2),cmap(:,3))
+    call colormap(cmap(:,1),cmap(:,2),cmap(:,3))
 
     fmin = real(minval(aa))
     fmax = real(maxval(aa))
@@ -616,7 +577,7 @@ print *, 'assign colormap for values between:', fmin, fmax
     integer, intent(in)  :: n
     real(DP), intent(in), optional :: rmin, rmax
 
-    integer :: aa(size(uu,dim=1), size(uu,dim=2))
+    integer :: cmap(n,3), aa(size(uu,1),size(uu,2)), i, j
     real(DP) :: rmin0, rmax0
 
     ! -
@@ -633,9 +594,23 @@ print *, 'assign colormap for values between:', fmin, fmax
       rmax0 = maxval(uu)
     endif
 
-    aa = int((uu-rmin0)/(rmax0-rmin0) * real(n))+1
-!   aa = nint((uu-rmin0)/(rmax0-rmin0)*float(n))
-    call assign_colormap_int(aa,rr,gg,bb,n,imin=0,imax=n)
+    call colormap(cmap(:,1),cmap(:,2),cmap(:,3))
+
+    where (uu < rmin0)
+      aa = 1
+    else where (uu > rmax0)
+      aa = n
+    else where
+      aa = int((uu-rmin0)/(rmax0-rmin0)*(n-2))+2
+    end where
+
+    do i=1,size(uu,1)
+    do j=1,size(uu,2)
+      rr(i,j) = cmap(aa(i,j),1)
+      gg(i,j) = cmap(aa(i,j),2)
+      bb(i,j) = cmap(aa(i,j),3)
+    end do
+    end do
 
   end subroutine assign_colormap_2R
 
