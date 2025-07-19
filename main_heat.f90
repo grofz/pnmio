@@ -43,10 +43,10 @@
       end subroutine mirror
     end interface mirror
     interface laplace
-      subroutine laplace(aa,alfa)
+      subroutine laplace(aa,alfa0)
         import DP
         real(DP), intent(inout) :: aa(:,:)
-        real(DP), intent(in) :: alfa
+        real(DP), intent(in) :: alfa0
       end subroutine laplace
     end interface laplace
 !
@@ -66,6 +66,9 @@
 !
     call assign_colormap(uu, rr, gg, bb, COLORMAP_SIZE)
     call writeppm('test0.ppm', rr, gg, bb)
+    ! alternative color map
+    call assign_colormap(uu, rr, gg, bb, COLORMAP_SIZE, idcolormap=CM_TURBO)
+    call writeppm('test0_alt.ppm', rr, gg, bb)
 
 !
 ! do averaging (Euler method steps)
@@ -102,6 +105,9 @@
 
     call assign_colormap(uu, rr, gg, bb, COLORMAP_SIZE, rmin, rmax)
     call writeppm('test.ppm', rr, gg, bb)
+    ! alternative color map
+    call assign_colormap(uu, rr, gg, bb, COLORMAP_SIZE, rmin, rmax, idcolormap=CM_TURBO)
+    call writeppm('test_alt.ppm', rr, gg, bb)
 
   end program example_heat
 

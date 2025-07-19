@@ -15,11 +15,14 @@
 !   subroutine writepgm(filename, aa, mx, is_plain, ierr)
 !  *subroutine writeppm_3x2d(filename, rr, gg, bb, mx, is_plain, ierr)
 !  *subroutine writeppm_1x3d(filename, aa, mx, is_plain, ierr)
-!   subroutine colormap(red,green,blue)
-!  *subroutine assign_colormap_int(aa,rr,gg,bb,n,imin,imax,iwh,ibl)
-!  *subroutine assign_colormap_2R(uu,rr,gg,bb,n,rmin,rmax)
+!   subroutine colormap(red,green,blue,idcolormap)
+!  *subroutine colormap_viridis(red, green, blue)
+!  *subroutine colormap_rainbow(red, green, blue)
+!  *subroutine assign_colormap_i4(aa,rr,gg,bb,n,amin,amax,idcolormap)
+!  *subroutine assign_colormap_r8(uu,rr,gg,bb,n,umin,umax,idcolormap)
 !  *helper procedures for stream read
 !  *conversion from signed to unsigned numbers
+!  *data for additional colormaps
 !
 ! (*) private objects
 
@@ -49,6 +52,7 @@
   ! colormap catalog
   integer, parameter, public :: CM_RAINBOW = 1
   integer, parameter, public :: CM_VIRIDIS = 2
+  integer, parameter, public :: CM_TURBO = 3
   integer, parameter :: CM_DEFAULT = CM_VIRIDIS
 
   ! default value of optional MAXVAL argument
@@ -57,8 +61,8 @@
   integer, parameter :: IOMSG_MAXLEN = 100
 
   interface assign_colormap
-    module procedure assign_colormap_int
-    module procedure assign_colormap_2R
+    module procedure assign_colormap_i4
+    module procedure assign_colormap_r8
   end interface assign_colormap
 
   interface readpnm
@@ -495,6 +499,8 @@
       call colormap_rainbow(red, green, blue)
     case(CM_VIRIDIS)
       call colormap_viridis(red, green, blue)
+    case(CM_TURBO)
+      call colormap_turbo(red, green, blue)
     case default
       error stop 'assign_colormap - unknown id of colormap'
     end select
@@ -512,6 +518,7 @@
     integer :: i, n, ilow, ndat
     real :: x, xlow, xhigh, s
 
+    allocate(dat(0,0)) ! just to avoid -Wunitialized warning
     dat = viridis_data()
     ndat = size(dat,2)
     n = size(red)-2 ! red(0) and red(n+1) are reserved for white/black
@@ -579,64 +586,96 @@
   end subroutine colormap_rainbow
 
 
-! This is a legacy (unchecked version) TODO
-  subroutine assign_colormap_int(aa,rr,gg,bb,n,imin,imax,iwh,ibl)
+  subroutine colormap_turbo(red, green, blue)
+    integer, intent(out) :: red(0:), green(0:), blue(0:)
+!
+! Generate turbo colormap (improved rainbow)
+!
+    integer, parameter :: mxval = 255
+    integer :: i, n
+    real :: x, rgb(3)
+
+    n = size(red)-2 ! red(0) and red(n+1) are reserved for white/black
+
+    red(0) = mxval
+    green(0) = mxval
+    blue(0) = mxval
+    do i=1, n
+      x = real(i-1)/real(n-1)
+      rgb = turbocm(x)
+      red(i) = int(real(mxval) * rgb(1))
+      green(i) = int(real(mxval) * rgb(2))
+      blue(i) = int(real(mxval) * rgb(3))
+    end do
+    red(n+1) = 0
+    green(n+1) = 0
+    blue(n+1) = 0
+
+  end subroutine colormap_turbo
+
+
+! ===============================
+! Colorize integer or real fields
+! ===============================
+
+  subroutine assign_colormap_i4(aa, rr, gg, bb, n, amin, amax, idcolormap)
     integer, intent(in)  :: aa(:,:)
     integer, intent(out) :: rr(:,:), gg(:,:), bb(:,:)
-    integer, intent(in)  :: n
-    integer, intent(in), optional :: imin, imax, iwh, ibl
+    integer, intent(in)  :: n ! number of colormap values 
+    integer, intent(in), optional :: amin, amax
+    integer, intent(in), optional :: idcolormap
 
     ! - local vars
     integer :: cmap(n,3)
     real    :: dx, fmin, fmax, f
-    integer :: i, j, m, nx, ny
+    integer :: i, j, m
 
     ! -
-    call colormap(cmap(:,1),cmap(:,2),cmap(:,3))
+    call colormap(cmap(:,1),cmap(:,2),cmap(:,3),idcolormap)
 
-    fmin = real(minval(aa))
-    fmax = real(maxval(aa))
-    if (present(imin)) fmin = real(imin)
-    if (present(imax)) fmax = real(imax)
-    nx = size(aa,dim=1)
-    ny = size(aa,dim=2)
+    if (present(amin)) then
+      fmin = real(amin)
+    else
+      fmin = real(minval(aa))
+    end if
+    if (present(amax)) then
+      fmax = real(amax)
+    else
+      fmax = real(maxval(aa))
+    end if
 
     ! to elements aa==fmin assign 2nd color,
     ! to elements aa==fmax assign (n-1)th color
-    ! 1st and nth colors are reserved for out of range elements, or iwh,ibl
+    ! 1st and nth colors are reserved for out of range elements
 
     dx = (fmax-fmin)/float(n-3)
 
-    do i=1,nx
-    do j=1,ny
-      f = (float(aa(i,j)) - fmin) / dx
+    do i=1,size(aa,dim=1)
+    do j=1,size(aa,dim=2)
+      f = (real(aa(i,j)) - fmin) / dx
       m = int(f) + 2
-      m = min(max(1,m),n)
+      m = min(max(2,m),n-1)
       rr(i,j) = cmap(m,1)
       gg(i,j) = cmap(m,2)
       bb(i,j) = cmap(m,3)
     enddo
     enddo
 
-    if (present(iwh)) then
-      where(aa==iwh)
-        rr = cmap(1,1)
-        gg = cmap(1,2)
-        bb = cmap(1,3)
-      endwhere
-    endif
-    if (present(ibl)) then
-      where(aa==ibl)
-        rr = cmap(n,1)
-        gg = cmap(n,2)
-        bb = cmap(n,3)
-      endwhere
-    endif
+    where(aa < amin)
+      rr = cmap(1,1)
+      gg = cmap(1,2)
+      bb = cmap(1,3)
+    endwhere
+    where(aa > amax)
+      rr = cmap(n,1)
+      gg = cmap(n,2)
+      bb = cmap(n,3)
+    endwhere
 
-  end subroutine assign_colormap_int
+  end subroutine assign_colormap_i4
 
 
-  subroutine assign_colormap_2R(uu,rr,gg,bb,n,umin,umax,idcolormap)
+  subroutine assign_colormap_r8(uu, rr, gg, bb, n, umin, umax, idcolormap)
     real(DP), intent(in)  :: uu(:,:)
     integer, intent(out) :: rr(:,:), gg(:,:), bb(:,:)
     integer, intent(in)  :: n
@@ -649,7 +688,7 @@
 !     (two colours are used for out of range values)
 ! UMIN, UMAX - set low and high limits 
 !              (if not present, min/max values in UU are used)
-! COLORMAP - id. of colormap used (if not present, default colormap selected)
+! IDCOLORMAP - id. of colormap used (if not present, default colormap selected)
 !
     integer :: cmap(n,3), aa(size(uu,1),size(uu,2)), i, j
     real(DP) :: umin0, umax0
@@ -685,7 +724,7 @@
     end do
     end do
 
-  end subroutine assign_colormap_2R
+  end subroutine assign_colormap_r8
 
 
 ! ---------------------------------
@@ -1002,6 +1041,9 @@
   end function
 
 
+! ------------------
+! Data for colormaps
+! ------------------
   function viridis_data() result(res)
     real :: res(3,256)
 !
@@ -1270,6 +1312,41 @@
                  0.993248, 0.906157, 0.143936]
       res = reshape(viridis, shape(res))
     end function viridis_data
+
+
+    function turbocm(xx) result (rgb)
+      real, intent(in) :: xx ! between <0, 1>
+      real :: rgb(3)         ! pixel vector with values <0, 1>
+!
+!  Adopted to Fortran using source code at:
+!    https://gist.github.com/mikhailov-work/0d177465a8151eb6ede1768d51d476c7
+!    Polynomial approximation in GLSL for the Turbo colormap
+!    Original LUT: https://gist.github.com/mikhailov-work/ee72ba4191942acecc03fe6da94fc73f
+!    Authors:
+!      Colormap Design: Anton Mikhailov (mikhailov@google.com)
+!      GLSL Approximation: Ruofei Du (ruofei@google.com)
+!
+!  A blog about Turbo colormap
+!  https://research.google/blog/turbo-an-improved-rainbow-colormap-for-visualization/
+!
+      real(DP), parameter :: kRedVec4(4) = [0.13572138_DP, 4.61539260_DP, -42.66032258_DP, 132.13108234_DP]
+      real(DP), parameter :: kGreenVec4(4) = [0.09140261_DP, 2.19418839_DP, 4.84296658_DP, -14.18503333_DP]
+      real(DP), parameter :: kBlueVec4(4) = [0.10667330_DP, 12.64194608_DP, -60.58204836_DP, 110.36276771_DP]
+      real(DP), parameter :: kRedVec2(2) = [-152.94239396_DP, 59.28637943_DP]
+      real(DP), parameter :: kGreenVec2(2) = [4.27729857_DP, 2.82956604_DP]
+      real(DP), parameter :: kBlueVec2(2) = [-89.90310912_DP, 27.34824973_DP]
+      real(DP) :: x, v4(4), v2(2)
+  
+      ! x = saturate(x); ! I assume it means to clamp "x" between <0, 1> ?
+      x = min(1.0_DP, max(0.0_DP, real(xx,DP)))
+      v4 = [1.0_DP, x, x*x, x*x*x]
+      v2 = [v4(3), v4(4)] * v4(3)
+      rgb(1) = real(dot_product(v4, kRedVec4)   + dot_product(v2, kRedVec2))
+      rgb(2) = real(dot_product(v4, kGreenVec4) + dot_product(v2, kGreenVec2))
+      rgb(3) = real(dot_product(v4, kBlueVec4)  + dot_product(v2, kBlueVec2))
+      ! clamp output to <0,1> (was not present in the original code)
+      rgb = max(0.0, min(1.0, rgb))
+    end function turbocm
 
 ! -----------------------------------------------------------------------------
   end module pnmio_module

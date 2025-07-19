@@ -4,7 +4,7 @@ program example_colormap
   implicit none
 
   integer, parameter :: WIDTH = 300, HEIGHT = 99
-  integer, parameter :: CM_SIZE = 11 ! 9+2 colours 
+  integer, parameter :: CM_SIZE = 100 !11 ! 9+2 colours 
 
   integer, dimension(WIDTH, HEIGHT) :: rr, gg, bb
   real(DP) :: u(WIDTH, HEIGHT)
@@ -25,6 +25,8 @@ program example_colormap
 
   call assign_colormap(u, rr, gg, bb, CM_SIZE, 0.0_DP, 1.0_DP, CM_VIRIDIS)
   call writeppm('test_colormap2.ppm', rr, gg, bb)
- !call writeppm('test_colormap2_plain.ppm', rr, gg, bb, is_plain=.true.)
+
+  call assign_colormap(u, rr, gg, bb, CM_SIZE, 0.0_DP, 1.0_DP, CM_TURBO)
+  call writeppm('test_colormap3.ppm', rr, gg, bb)
 
 end program example_colormap
