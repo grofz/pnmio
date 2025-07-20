@@ -780,9 +780,10 @@
   end subroutine consume_magick
 
 
-  subroutine consume_decimal(fid, val, ierr)
+  subroutine consume_decimal(fid, val, ierr, onedigit)
     integer, intent(in) :: fid
     integer, intent(out) :: val, ierr
+    logical, intent(in), optional :: onedigit
 
     ! consume ASCII decimal from the stream
     ! - read and ignore all whitespace characters
@@ -794,7 +795,10 @@
     character(len=1)   :: ch
     character(len=10)  :: dec
     character(len=IOMSG_MAXLEN) :: iomsg
+    logical :: onedigit0
 
+    onedigit0 = .false.
+    if (present(onedigit)) onedigit0 = onedigit
     ierr = -1
     mode = MODE_SCAN
     dec = ''
@@ -830,6 +834,10 @@
         end if
         dec_len = dec_len + 1
         dec(dec_len:dec_len) = ch
+        if (onedigit0) then
+          ! for plain PBM - allow to read values without spaces between
+          if (dec_len==1) exit
+        end if
       case(MODE_COMMENT)
         ! read and ignore all until CR or LF, then switch to scan mode again
         if (iachar(ch)==10 .or. iachar(ch)==13) then
@@ -940,7 +948,7 @@
       ASCII: block
         integer :: i
         do i=1, size(u)
-          call consume_decimal(fid, u(i), ierr)
+          call consume_decimal(fid, u(i), ierr, onedigit=p==1)
           if (ierr /= 0) then
             write(error_unit, '("raster raw error at posiiton ",i0," out of ",i0)') i, size(u)
             return
