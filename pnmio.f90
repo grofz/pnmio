@@ -24,20 +24,117 @@
 !  *conversion from signed to unsigned numbers
 !  *data for additional colormaps
 !
-! (*) private objects
+!  (*) private objects
 
-! SHORT DESCRIPTION
-! These routines work with 'raw' or 'plain' PNM formats (P1,P2,P3,P4,P5,P6)
+
+!DESCRIPTION
+!   readpnm - read PNM image from a file
+!   writeppm - write PPM image to a file
+!   writepgm - write PGM or PBM image to a file
+!   colormap - get color map components
+!   assign_colormap - colorize data
 !
-! Catching errors:
-! If an optional argument "ierr" is provided
-! - "ierr" on return contains "0" -> no errors
-! - nonzero "ierr" on output -> error occurred, messages sent to stderr
-! If "ierr" is not provided
-! - in the case of error, program stops
+!
+!   READPNM( FILENAME, AA, [IERR])
+!   > character FILENAME (in)      name of file
+!   < integer AA (out)             allocatable rank-2 or rank-3 array
+!   < integer IERR (out, optional) non-zero flags an error
+!
+!     Read values from PPM, PGM or PBM image file.
+!
+!     For rank-3 arrays, first index represents color components,
+!     and will be allocated to 3 for color images (PPM) or to 1
+!     for bitmap (PBM) or grayscale (PGM) images.
+!     The second and third components are the are the image width and height.
+!     If grayscale (PGM) or bitmap (PBM) image is read, also rank-2
+!     array can be provided.
+!
+!
+!   WRITEPPM( FILENAME, RR, GG, BB, [MX], [IS_PLAIN], [IERR])
+!   WRITEPPM( FILENAME, AA, [MX], [IS_PLAIN], [IERR])
+!   > character FILENAME (in)          name of file
+!   > integer RR, GG, BB (in)          rank-2 array for color components
+!   > integer AA (in)                  rank-3 array for color components
+!   > integer MX (in, optional)        MAXVAL (written to the file header)
+!   > logical IS_PLAIN (in, optional)  plain or raw (binary) format
+!   < integer IERR (out, optional)     non-zero flags an error
+!
+!     Write values to PPM image file.
+!
+!     Color component values can be given as three rank-2 arrays or a
+!     single rank-3 array where AA(1,:,:) is red, AA(2,:,:) is green and
+!     AA(3,:,:) is blue color component.
+!     If MX is not given, it is set automatically to 255 or 65535 depending
+!     on the actual values in color arrays.
+!     On default, file is formatted as raw (binary), use IS_PLAIN set to .T.
+!     to make file formatted as plain (ascii).
+!
+!
+!  WRITEPGM( FILENAME, AA, [MX], [IS_PLAIN], [IERR])
+!   > character FILENAME (in)          name of file
+!   > integer AA (in)                  rank-2 array for values
+!   > integer MX (in, optional)        MAXVAL (written to the file header)
+!   > logical IS_PLAIN (in, optional)  plain or raw (binary) format
+!   < integer IERR (out, optional)     non-zero flags an error
+!
+!     Write values to PGM (or PBM) image file.
+!
+!     If MX is not givent, PGM file is made and the value is set automatically
+!     to 255 or 65535 depending on the actual values in the array.
+!     To write a PBM file, provide MX = 1. If MX is given with a value not equal
+!     to one, PGM file is made.
+!     On default, file is formatted as raw (binary), use IS_PLAIN set to .T.
+!     to make file formatted as plain (ascii).
+!
+!
+!  COLORMAP( RED, GREEN, BLUE, [IDCOLORMAP])
+!    < integer RED, GREEN, BLUE (out)     rank-1 arrays for color components
+!    > integer IDCOLORMAP (in, optional)  select colormap
+!
+!      Get color values for red, green and blue components.
+!
+!      First and last array elements are set to the black and white color,
+!      the in-between elements (2:N-1) correspond to equidistantly distributed
+!      colors from the selected colormap.
+!      At the moment, the following colormaps are implemented
+!        CM_RAINBOW - rainbow (jet) colormap
+!        CM_VIRIDIS - viridis colormap (default colormap)
+!        CM_TURBO - turbo colormap (improved jet colormap)
+!
+!
+!  ASSIGN_COLORMAP(AA, RR, GG, BB, N, [AMIN], [AMAX], [IDCOLORMAP])
+!  ASSIGN_COLORMAP(UU, RR, GG, BB, N, [UMIN], [UMAX], [IDCOLORMAP])
+!    > integer AA (in)                    rank-2 array of integer values
+!    > real UU (in)                       rank-2 array of real (8bit) values
+!    < integer RR, GG, BB (out)           rank-2 array of color components (0-255)
+!    > integer AMIN, AMAX (in, optional)  set low and high limits
+!    > real UMIN, UMAX (in, optional)     set low and high limits
+!    > integer IDCOLORMAP (in, optional)  select colormap
+!
+!      Construct coloured image from the values using the selected colormap.
+!
+!      If the limits (AMIN/AMAX or UMIN/UMAX) are given, these values
+!      correspond tothe lowest and highest colors from the colormap. The
+!      values that are below the low limit or above the high limit are set
+!      to black or white color. If the limits are not provided, they are set
+!      to the minimuma and the maximum value from the field.
+!
+!
+!  NOTES
+!  (1) Catching errors:
+!  If an optional argument "ierr" is provided
+!  - "ierr" on return contains "0" -> no errors
+!  - nonzero "ierr" on output -> error occurred, details are written to STDERR
+!  If "ierr" is not provided
+!  - in the case of error, program stops, details are written to STDERR
+!
+!  (2) Documentation on PNM formats:
+!  WEB: https://netpbm.sourceforge.net/doc/pnm.html
+!
+!  (3) Known bugs:
+!  Raw image formats can contain more than one image in a single file. At the
+!  moment, the additional images are ignored by "readpnm" subroutine
 
-
-! WEB: https://netpbm.sourceforge.net/doc/pnm.html
 
 ! -----------------------------------------------------------------------------
   module pnmio_module
@@ -49,7 +146,7 @@
   public readpnm, writepgm, writeppm
   public colormap, assign_colormap
 
-  ! colormap catalog
+  ! colormaps catalog
   integer, parameter, public :: CM_RAINBOW = 1
   integer, parameter, public :: CM_VIRIDIS = 2
   integer, parameter, public :: CM_TURBO = 3

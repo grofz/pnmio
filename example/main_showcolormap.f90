@@ -1,14 +1,18 @@
 program example_colormap
   use pnmio_module
-  use iso_fortran_env, only : DP=>real64
+  use iso_fortran_env, only : DP=>real64, output_unit
   implicit none
 
   integer, parameter :: WIDTH = 300, HEIGHT = 99
-  integer, parameter :: CM_SIZE = 100 !11 ! 9+2 colours 
 
   integer, dimension(WIDTH, HEIGHT) :: rr, gg, bb
   real(DP) :: u(WIDTH, HEIGHT)
-  integer :: i
+  integer :: i, cm_size
+
+  write(output_unit,'(a)',advance='no') 'Enter the number of colours: '
+  read(*,*) cm_size
+  cm_size = max(1, cm_size)
+  cm_size = cm_size + 2  ! add black/white for out of range values
 
   do i=1, size(u,1)
     ! linspace between 0.0 and 1.0

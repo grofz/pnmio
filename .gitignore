@@ -3,4 +3,5 @@
 a.out
 *.exe
 test*
+output*
 !test.f90
