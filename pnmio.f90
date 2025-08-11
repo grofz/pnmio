@@ -2,6 +2,8 @@
 ! (c) 2024 Z. Grof (UCT Prague) <grofz@vscht.cz>
 ! ==============================================
 
+!REPOSITORY
+!  https://github.org/grofz/pnmio
 
 !CONTENT
 ! module pnmio_module
@@ -28,11 +30,11 @@
 
 
 !DESCRIPTION
-!   readpnm - read PNM image from a file
-!   writeppm - write PPM image to a file
-!   writepgm - write PGM or PBM image to a file
-!   colormap - get color map components
-!   assign_colormap - colorize data
+!   readpnm - read PNM images (PPM, PGM, PBM)
+!   writeppm - write PPM images (color images)
+!   writepgm - write PGM (grayscale) or PBM (bitmap) images
+!   colormap - get RGB colormap arrays
+!   assign_colormap - map scalar fields to RGB images using a colormap
 !
 !
 !   READPNM( FILENAME, AA, [IERR])
@@ -45,9 +47,8 @@
 !     For rank-3 arrays, first index represents color components,
 !     and will be allocated to 3 for color images (PPM) or to 1
 !     for bitmap (PBM) or grayscale (PGM) images.
-!     The second and third components are the are the image width and height.
-!     If grayscale (PGM) or bitmap (PBM) image is read, also rank-2
-!     array can be provided.
+!     The second and third components are the image width and height.
+!     Alternatively, a rank-2 array can be used for grayscale/bitmap images
 !
 !
 !   WRITEPPM( FILENAME, RR, GG, BB, [MX], [IS_PLAIN], [IERR])
@@ -293,6 +294,13 @@
       if (any(aa<0) .or. any(aa>mx)) then
         write(error_unit,'("the file contains values out of range (0,mx)")')
         ierr0 = -2
+        exit BLK
+      end if
+
+      ! close file
+      close(fid, iostat=ios, iomsg=iomsg)
+      if (ios /= 0) then
+        write(error_unit,'(a)') 'closing file iomsg"'//trim(iomsg)
         exit BLK
       end if
 
